@@ -109,24 +109,24 @@ This simulation is a proof-of-concept and makes several simplifications compared
 
 | Paper | Simulation | Rationale |
 |-------|-----------|-----------|
-| **Model $M_\theta$**: diffusion model (e.g. Stable Diffusion) with a full-scale U-Net | **Tiny U-Net** (~2-5K params, 8×8 spatial, channels 2→8→16→8→1) | EZKL circuit compilation and proving is infeasible for large models. The tiny U-Net preserves the architectural style (down-blocks, skip connections, up-blocks) while keeping proofs tractable. |
-| **Meta-proof $\pi_i^{(2)}$**: ZKP for $\mathcal{L}_{\text{det}}$ proving that deterministic randomness $\rho_i = F(\mathsf{sk}_m, r_i)$ was used | **Dummy string** (random 64-char hex); verification always returns `True` | Meta-proofs are the most expensive component—they prove a statement *about* the SNARK prover circuit itself. Out of scope for this PoC. |
-| **Deterministic prover randomness** $\rho_i = F(\mathsf{sk}_m, r_i)$ replacing the prover's random tape | **EZKL default randomness** | EZKL doesn't expose an API to inject custom prover randomness. The seed derivation $r_i$ is still computed per the paper for the noise input, but the prover's internal tape is not controlled. |
-| **Proof chain binding** $\mathsf{bind}_i = H(\pi_{i-1}^{(1)})$ for $i \geq 2$ linking proofs sequentially | **Implemented** — $\mathsf{bind}_1 = G(s,x)$ (fingerprint), $\mathsf{bind}_i = \text{SHA-256}(\pi_{i-1})$ for $i \geq 2$. Validated in `blockchain.py`. | Faithfully follows the paper's proof chain binding scheme. |
-| **Output encryption** $\mathsf{ct}_i = \mathsf{Enc}(\mathsf{pk}_u, y_i \| \mathsf{bind}_i \| \mathsf{taskID})$ | **Implemented** — X25519 key agreement + ChaCha20-Poly1305 AEAD. Each query carries the user's encryption public key; miners encrypt outputs before inclusion. | Uses modern ECIES-style encryption. The paper leaves the encryption scheme generic; this is a concrete instantiation. |
-| **ZKP statement** $\mathcal{L}_{\text{PoML}}$ proving inference correctness, commitment opening, model commitment opening, and encryption correctness | **EZKL proof of inference + Poseidon input/output commitments** | EZKL's `hashed/public` visibility mode wraps inputs and outputs in Poseidon hash commitments inside the circuit, approximating the paper's commitment openings. Model commitment and encryption correctness remain outside the circuit. |
-| **Commitment scheme** $(\mathsf{Setup}_\mathsf{com}, \mathsf{Commit}, \mathsf{Open})$ for query inputs and model weights | **SHA-256 hash** as a binding commitment | A simple hash commitment is sufficient for simulation purposes. Not hiding (inputs are public anyway in this PoC). |
+| **Model M\_θ**: diffusion model (e.g. Stable Diffusion) with a full-scale U-Net | **Tiny U-Net** (~2-5K params, 8×8 spatial, channels 2→8→16→8→1) | EZKL circuit compilation and proving is infeasible for large models. The tiny U-Net preserves the architectural style (down-blocks, skip connections, up-blocks) while keeping proofs tractable. |
+| **Meta-proof π\_i^(2)**: ZKP for L\_det proving that deterministic randomness ρ\_i = F(sk\_m, r\_i) was used | **Dummy string** (random 64-char hex); verification always returns `True` | Meta-proofs are the most expensive component—they prove a statement *about* the SNARK prover circuit itself. Out of scope for this PoC. |
+| **Deterministic prover randomness** ρ\_i = F(sk\_m, r\_i) replacing the prover's random tape | **EZKL default randomness** | EZKL doesn't expose an API to inject custom prover randomness. The seed derivation r\_i is still computed per the paper for the noise input, but the prover's internal tape is not controlled. |
+| **Proof chain binding** bind\_i = H(π\_{i-1}^(1)) for i ≥ 2 linking proofs sequentially | **Implemented** — bind\_1 = G(s,x) (fingerprint), bind\_i = SHA-256(π\_{i-1}) for i ≥ 2. Validated in `blockchain.py`. | Faithfully follows the paper's proof chain binding scheme. |
+| **Output encryption** ct\_i = Enc(pk\_u, y\_i ‖ bind\_i ‖ taskID) | **Implemented** — X25519 key agreement + ChaCha20-Poly1305 AEAD. Each query carries the user's encryption public key; miners encrypt outputs before inclusion. | Uses modern ECIES-style encryption. The paper leaves the encryption scheme generic; this is a concrete instantiation. |
+| **ZKP statement** L\_PoML proving inference correctness, commitment opening, model commitment opening, and encryption correctness | **EZKL proof of inference + Poseidon input/output commitments** | EZKL's `hashed/public` visibility mode wraps inputs and outputs in Poseidon hash commitments inside the circuit, approximating the paper's commitment openings. Model commitment and encryption correctness remain outside the circuit. |
+| **Commitment scheme** (Setup\_com, Commit, Open) for query inputs and model weights | **SHA-256 hash** as a binding commitment | A simple hash commitment is sufficient for simulation purposes. Not hiding (inputs are public anyway in this PoC). |
 | **Digital signatures** (Ed25519 or similar) | **HMAC-SHA256** stub | Simplified to avoid external key management. Signatures are checked optimistically. |
 | **Optimistic variant** (Section 5b): VRF-based randomness binding + challenge-response protocol | **Not implemented** | Excluded from scope per user request. |
-| **Miner secret-key commitment** $c_{\mathsf{sk}} \leftarrow \mathsf{Commit}(\mathsf{pp}, \mathsf{sk}_m)$ registered on-chain | **Not implemented** | Only relevant for meta-proof verification, which is stubbed. |
+| **Miner secret-key commitment** c\_sk ← Commit(pp, sk\_m) registered on-chain | **Not implemented** | Only relevant for meta-proof verification, which is stubbed. |
 | **Distributed network** with real P2P gossip | **Simulated network** via `multiprocessing.Queue` + `threading.Timer` delays | All processes run locally on one machine; latency is simulated. |
 
 ### What IS faithfully implemented
 
-- **Block production loop** (Algorithm 1): miners retrieve queries → derive seed $r_i$ → run inference → generate ZKP → evaluate lottery $H(G(s,x), \Pi_i) < D$
-- **Seed derivation**: $r_i = H(G(s,x) \| \mathsf{c}_{c,i} \| \mathsf{taskID}_i \| \mathsf{pk}_m \| i)$ exactly per the paper
-- **Block fingerprint**: $G(s,x) = \text{SHA-256}(\text{prev\_hash} \| \text{hash(txns)})$
-- **Lottery mechanism**: $H_i = H(G(s,x), \Pi_i) < D$ with configurable difficulty
+- **Block production loop** (Algorithm 1): miners retrieve queries → derive seed r\_i → run inference → generate ZKP → evaluate lottery H(G(s,x), Π\_i) < D
+- **Seed derivation**: r\_i = H(G(s,x) ‖ c\_{c,i} ‖ taskID\_i ‖ pk\_m ‖ i) exactly per the paper
+- **Block fingerprint**: G(s,x) = SHA-256(prev\_hash ‖ hash(txns))
+- **Lottery mechanism**: H\_i = H(G(s,x), Π\_i) < D with configurable difficulty
 - **Block validity** (Definition 4.6, conditions 1-2 and 5; condition 3 optionally; condition 4 stubbed)
 - **Longest-chain rule** consensus
 - **Proof-of-inference**: real EZKL SNARK proofs for the tiny U-Net
