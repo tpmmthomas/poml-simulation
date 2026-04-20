@@ -13,6 +13,9 @@ model/*.srs
 model/*.pk
 model/*.vk
 model/*.pf
+*.key
+*.ezkl
+*.data
 
 # Environment
 .env

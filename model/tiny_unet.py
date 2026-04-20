@@ -96,7 +96,8 @@ def export_onnx(output_path: str = "model/network.onnx") -> None:
         input_names=["input"],
         output_names=["output"],
         dynamic_axes=None,
-        opset_version=17,
+        opset_version=12,
+        dynamo=False,
     )
 
     # Validate

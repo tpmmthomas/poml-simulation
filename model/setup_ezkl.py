@@ -56,7 +56,9 @@ async def setup_ezkl(
 
     # 3. Calibrate settings
     print("[EZKL] Calibrating settings...")
-    await ezkl.calibrate_settings(calibration_path, model_path, settings_path, "resources")
+    res = ezkl.calibrate_settings(calibration_path, model_path, settings_path, "resources")
+    if asyncio.iscoroutine(res):
+        res = await res
 
     # 4. Compile circuit
     print("[EZKL] Compiling circuit...")
@@ -65,11 +67,15 @@ async def setup_ezkl(
 
     # 5. Get SRS
     print("[EZKL] Fetching SRS...")
-    await ezkl.get_srs(settings_path, srs_path)
+    res = ezkl.get_srs(settings_path=settings_path, srs_path=srs_path)
+    if asyncio.iscoroutine(res) or asyncio.isfuture(res):
+        res = await res
 
     # 6. Setup (generate proving & verification keys)
     print("[EZKL] Running setup (generating pk, vk)...")
     res = ezkl.setup(compiled_path, vk_path, pk_path, srs_path)
+    if asyncio.iscoroutine(res) or asyncio.isfuture(res):
+        res = await res
     assert res, "setup failed"
 
     print("[EZKL] Setup complete. Artifacts:")
