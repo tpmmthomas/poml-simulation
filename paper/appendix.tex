@@ -1,0 +1,276 @@
+% ============================================================
+% Appendix A: Stochastic Denoising Models are PoML-Compatible
+% ============================================================
+
+\section{Stochastic Denoising Models are PoML-Compatible}
+\label{app:cia}
+
+This section establishes that stochastic denoising diffusion models (\S\ref{subsec:diffusion-models}) satisfy Definition~\ref{def:model} and therefore belong to the PoML-compatible model class~$\mathcal{K}$. We verify both required properties: uniform query cost (\S\ref{app:uniform-cost}) and $\delta$-amortizability (\S\ref{app:amortizability}), and provide empirical validation on Stable Diffusion (\S\ref{app:cia-experiments}).
+
+Our approach mirrors the treatment of hash functions in Bitcoin's backbone protocol~\cite{GKL20}. In Bitcoin, the non-amortizability of~$H$ is \emph{assumed} via the random oracle model rather than derived from lower-level primitives. Analogously, we assume that the learned denoising network~$f_\theta$ is non-amortizable (Assumption~\ref{def:ftheta-assumption}), and then \emph{prove} that the per-step noise injection in stochastic diffusion sampling ensures that no computation can be shared across inferences with distinct seeds, yielding $\delta$-amortizability with $\delta = \mathsf{negl}(\kappa)$.
+
+% ---- A.1 ----
+\subsection{Uniform Query Cost}
+\label{app:uniform-cost}
+
+We verify that stochastic denoising models satisfy Definition~\ref{def:uniform-cost}.
+
+\begin{lemma}[Uniform query cost of stochastic denoising models]
+\label{lem:uniform-cost-app}
+Let $M_\theta$ be a stochastic denoising model with $T$ steps, latent dimension~$d$, and denoising network~$f_\theta$. Then $M_\theta$ has uniform query cost
+\[
+    \mathsf{Cost}(M_\theta) \;=\; T \cdot \mathsf{Cost}(f_\theta) \;+\; (T-1) \cdot \Theta(d),
+\]
+which is a fixed architecture constant independent of the inputs $(c, r)$.
+\end{lemma}
+
+\begin{proof}
+The denoising network $f_\theta$ is a U-Net composed of convolutional layers, group normalisation, element-wise activations, and attention layers, all with predetermined dimensions. Every evaluation traverses an identical computational graph---there are no input-dependent branches, early exits, or variable-length loops. Consequently, $\mathsf{Cost}(f_\theta)$ is a constant determined entirely by the architecture.
+
+Each of the $T$ denoising steps evaluates $f_\theta$ once on a $d$-dimensional input. Steps $t = T, \ldots, 2$ additionally perform noise scaling and addition ($x_{t-1} = f_\theta(x_t, c, t) + \sigma_t z_t$), costing $\Theta(d)$ operations per step. Since all quantities are architecture constants, the total cost is independent of $(c, r)$.
+\end{proof}
+
+% ---- A.2 ----
+\subsection{$\delta$-Amortizability}
+\label{app:amortizability}
+
+We now establish that stochastic denoising models satisfy Definition~\ref{def:delta-reuse} with $\delta = \mathsf{negl}(\kappa)$. The argument proceeds in three parts: (1)~we introduce the notion of quantized reusability arising from the ZKP circuit, (2)~we prove that per-step Gaussian noise injection causes the inputs to~$f_\theta$ at every denoising step to differ by far more than the quantization resolution, and (3)~we formalize a non-amortizability assumption on~$f_\theta$ grounded in this divergence, yielding $\delta$-amortizability of the full model.
+
+\subsubsection{Quantization and $\delta_q$-Reusable State}
+
+ZKP systems for neural network inference operate over finite fields, mapping each real-valued activation $v \in \mathbb{R}$ to the quantized integer $\hat{v} = \lfloor v \cdot 2^k \rceil$, where $k$ is the number of fractional bits. The quantization resolution is $\delta_q = 2^{-k}$. Typical ZKML implementations use $k \in [10, 18]$, yielding $\delta_q \in [2^{-18}, 2^{-10}]$.
+
+Given this quantization procedure, we loosely define a reusable vector as vectors where individual coordinates do not differ by more than the quantized value. An adversary may potentially skip a sub-computation only if the quantized inputs are \emph{identical} to those of a previously verified computation. 
+
+\begin{definition}[$\delta_q$-Reusable state]
+\label{def:reusable-app}
+An intermediate state $x \in \mathbb{R}^d$ during model evaluation is \emph{$\delta_q$-reusable} between two executions with seeds $r, r'$ if the quantized representations agree in all coordinates:
+\[
+    \bigl\lfloor x_{j}(r) \cdot 2^k \bigr\rceil = \bigl\lfloor x_{j}(r') \cdot 2^k \bigr\rceil \quad \text{for all } j = 1, \ldots, d.
+\]
+Equivalently, $\|x(r) - x(r')\|_\infty < \delta_q / 2$. If a state is $\delta_q$-reusable, the corresponding sub-circuit of the ZKP receives identical quantized inputs, and the associated computation could potentially be skipped.
+\end{definition}
+
+\subsubsection{Input Divergence Under Noise Injection}
+
+We first establish that for two executions with distinct seeds, the inputs to $f_\theta$ at every denoising step differ by per-coordinate Gaussian perturbations of magnitude $\sigma_{\min} \gg \delta_q$, rendering them non-$\delta_q$-reusable with overwhelming probability.
+
+\begin{lemma}[Gaussian anti-concentration]
+\label{lem:anti-conc-app}
+Let $W \sim \mathcal{N}(0, \sigma^2)$ with $\sigma > 0$. For any $a \in \mathbb{R}$ and any $\delta_q > 0$:
+\[
+    \Pr\!\bigl[|a + W| \leq \delta_q/2\bigr] \;\leq\; \frac{\delta_q}{\sigma\sqrt{2\pi}}.
+\]
+\end{lemma}
+
+\begin{proof}
+The density of $a + W$ is bounded above by $\frac{1}{\sigma\sqrt{2\pi}}$. Integrating over an interval of width $\delta_q$ gives the result.
+\end{proof}
+
+\begin{theorem}[Step-level input divergence in stochastic denoising]
+\label{thm:cia-theorem}
+Let $M_\theta$ be a stochastic denoising model (\S\ref{subsec:diffusion-instantiation}) with $T$ denoising steps, latent dimension~$d$, and noise schedule $\sigma_t > 0$ for $t = T, \ldots, 2$. Let $\sigma_{\min} = \min_{t \geq 2} \sigma_t$ and suppose $\delta_q < 2\sigma_{\min}\sqrt{2\pi}$. For two independent seeds $r, r' \overset{\mathrm{i.i.d.}}{\sim} \{0,1\}^\kappa$:
+\begin{multline*}
+    \Pr\!\bigl[\,\exists\, t \in \{1, \ldots, T\} :\; x_t(r) \text{ is } \delta_q\text{-reusable} \\
+    \text{with } x_t(r')\bigr] \;\leq\; T \cdot \left(\frac{\delta_q}{2\sigma_{\min}\sqrt{\pi}}\right)^{\!d}.
+\end{multline*}
+\end{theorem}
+
+\begin{proof}
+We bound the probability that any single step's input state is $\delta_q$-reusable, then apply a union bound over $T$ steps.
+
+\paragraph{Step $T$ (initial noise).}
+The states $x_T(r)$ and $x_T(r')$ are independent samples from $\mathcal{N}(0, I_d)$. For each coordinate~$j$, $x_{T,j}(r) - x_{T,j}(r') \sim \mathcal{N}(0, 2)$. By Lemma~\ref{lem:anti-conc-app} with $a = 0$ and $\sigma = \sqrt{2}$:
+\[
+    \Pr\!\bigl[|x_{T,j}(r) - x_{T,j}(r')| \leq \delta_q/2\bigr] \;\leq\; \frac{\delta_q}{2\sqrt{\pi}}.
+\]
+Since coordinates are independent, the probability that \emph{all} $d$ coordinates are quantization-equivalent is at most $\bigl(\delta_q/(2\sqrt{\pi})\bigr)^d$.
+
+\paragraph{Steps $t = T{-}1, \ldots, 1$.}
+From the denoising recurrence (eq.~\eqref{eq:ddpm-step-prelim}), $x_t = f_\theta(x_{t+1}, c, t{+}1) + \sigma_{t+1}\, z_{t+1}$ for $t \leq T{-}1$, where $z_{t+1}(r)$ and $z_{t+1}(r')$ are independent $\mathcal{N}(0, I_d)$ vectors derived from their respective seeds. For each coordinate~$j$, let $a_j = f_\theta(x_{t+1}(r), c, t{+}1)_j - f_\theta(x_{t+1}(r'), c', t{+}1)_j$. Then:
+\[
+x_{t,j}(r) - x_{t,j}(r') \;=\; a_j 
+    +\; \sigma_{t+1}\bigl[z_{t+1,j}(r) - z_{t+1,j}(r')\bigr].
+\]
+
+Conditioned on $(x_{t+1}(r), x_{t+1}(r'))$, the term $a_j$ is a deterministic constant and $z_{t+1,j}(r) - z_{t+1,j}(r') \sim \mathcal{N}(0, 2)$. By Lemma~\ref{lem:anti-conc-app} with $a = a_j$ and $\sigma = \sigma_{t+1}\sqrt{2}$:
+\[
+    \Pr\!\bigl[|x_{t,j}(r) - x_{t,j}(r')| \leq \delta_q/2 \;\big|\; x_{t+1}(r), x_{t+1}(r')\bigr] \;\leq\; \frac{\delta_q}{2\sigma_{t+1}\sqrt{\pi}}\,.
+\]
+Since noise coordinates $z_{t+1,j}$ are independent across~$j$ (conditioned on $x_{t+1}$), the probability that all $d$ coordinates are simultaneously quantization-equivalent is at most $\bigl(\delta_q/(2\sigma_{t+1}\sqrt{\pi})\bigr)^d$.
+
+\paragraph{Union bound.}
+Over all $T$ steps, using $\sigma_{t+1} \geq \sigma_{\min}$ for $t \leq T{-}1$ and the initial noise standard deviation $1 \geq \sigma_{\min}$:
+\[
+    \Pr[\exists\, t : x_t \text{ is } \delta_q\text{-reusable}] \;\leq\; T \cdot \left(\frac{\delta_q}{2\sigma_{\min}\sqrt{\pi}}\right)^{\!d}. \qedhere
+\]
+\end{proof}
+
+Theorem~\ref{thm:cia-theorem} captures a fundamental property of stochastic diffusion: two inferences with different seeds follow \emph{completely different denoising trajectories}, even when they produce semantically similar outputs. The initial noise $x_T$ determines the starting point in a high-dimensional latent space, and fresh noise at each subsequent step perturbs the trajectory independently. While the denoising network steers all trajectories toward the data manifold, the intermediate states are as different as independent random samples in $\mathbb{R}^d$. An adversary therefore gains no computational advantage from prior inferences---regardless of how similar the conditioning inputs are.
+
+\paragraph{Numerical instantiation.}
+For Stable Diffusion v1-4 with $d = 16{,}384$, $T = 50$, $\sigma_{\min} \approx 0.01$ (linear noise schedule), and $\delta_q = 2^{-10} \approx 10^{-3}$: the per-coordinate probability is $\delta_q/(2\sigma_{\min}\sqrt{\pi}) \approx 0.028$, and the per-step bound is $0.028^{16{,}384} < 10^{-25{,}000}$. Even after the union bound over $T = 50$ steps, the probability remains astronomically small.
+
+\subsubsection{Non-Amortizability Assumption on $f_\theta$}
+
+Having established that the inputs to $f_\theta$ at each denoising step differ by Gaussian perturbations of magnitude $\sigma_{\min} \gg \delta_q$ (Theorem~\ref{thm:cia-theorem}), we now formalize the assumption that this input-level divergence prevents computational reuse \emph{within} $f_\theta$.
+
+\begin{assumption}[Non-amortizability of $f_\theta$ under input divergence]
+\label{def:ftheta-assumption}
+Let $f_\theta : \mathbb{R}^d \times \mathbb{R}^{d_c} \times [T] \to \mathbb{R}^d$ be the denoising network with $L$ layers and layer-$l$ intermediate activations $h_l \in \mathbb{R}^{d_l}$. For two inputs $(x,c,t)$ and $(x',c',t')$ where the difference $x - x'$ contains independent per-coordinate Gaussian components with variance at least $2\sigma_{\min}^2$ for $\sigma_{\min} \gg \delta_q$, the probability that any layer-$l$ intermediate activation is $\delta_q$-reusable (Definition~\ref{def:reusable-app}) between the two evaluations is negligible:
+\[
+    \Pr\!\bigl[\exists\, l \in [L] : h_l(x,c,t) \text{ is } \delta_q\text{-reusable with } h_l(x',c',t')\bigr] = \mathsf{negl}(\kappa).
+\]
+Consequently, the cost of evaluating $f_\theta(x,c,t)$ given oracle access to the full computation trace of any prior evaluation of~$f_\theta$ is at least $(1 - \mathsf{negl}(\kappa)) \cdot \mathsf{Cost}(f_\theta)$.
+\end{assumption}
+
+\paragraph{Justification.}
+The per-step Gaussian noise $\sigma_t z_t$ injected during denoising creates per-coordinate input differences of order $\sigma_{\min}$---many orders of magnitude larger than $\delta_q$. While we are not able to formally prove this assumption, for a ``useful'' model with meaningful weights $\theta$, we believe that each layer's output inherits sufficient per-coordinate variance from the input noise to prevent $\delta_q$-reusability across all $d_l$ coordinates. The empirical results in \S\ref{app:cia-experiments} confirm that activation divergence propagates through all layers of the network, supporting this assumption.
+
+\subsubsection{From Input Divergence to $\delta$-Amortizability}
+
+\begin{theorem}[Stochastic denoising models are $\delta$-amortizable]
+\label{thm:amort-diff}
+Let $M_\theta$ be a stochastic denoising model with non-amortizable $f_\theta$ (Assumption~\ref{def:ftheta-assumption}). Then $M_\theta$ satisfies Definition~\ref{def:delta-reuse} with $\delta = \mathsf{negl}(\kappa)$.
+\end{theorem}
+
+\begin{proof}
+Consider the $\delta$-amortizability experiment of Definition~\ref{def:delta-reuse}. The adversary~$\mathcal{A}$ receives $\theta$, performs arbitrary polynomial preprocessing (including caching intermediate activations from prior inferences), and must then evaluate $M_\theta(c^*, r^*)$ for a fresh seed~$r^*$.
+
+By Theorem~\ref{thm:cia-theorem}, for every prior inference with seed $r \neq r^*$, the inputs to $f_\theta$ at each denoising step~$t$ differ by independent Gaussian components with per-coordinate variance at least $2\sigma_{\min}^2$, where $\sigma_{\min} \gg \delta_q$. Taking a union bound over the polynomially many prior queries and $T$ denoising steps, the input to $f_\theta$ at every step of the fresh inference satisfies the divergence condition of Assumption~\ref{def:ftheta-assumption} with respect to all prior evaluations, with overwhelming probability.
+
+By Assumption~\ref{def:ftheta-assumption}, this Gaussian input divergence ensures that no intermediate layer activation within $f_\theta$ is $\delta_q$-reusable, and each of the $T$ evaluations of $f_\theta$ requires cost at least $(1 - \mathsf{negl}(\kappa)) \cdot \mathsf{Cost}(f_\theta)$. Additionally, the $(T-1)$ noise additions cannot be skipped either---each uses a distinct noise vector $z_t$ derived from the fresh seed~$r^*$---contributing cost $(T-1) \cdot \Theta(d)$. Therefore:
+\[
+    T_{\mathcal{A}} \;\geq\; T \cdot (1 - \mathsf{negl}(\kappa)) \cdot \mathsf{Cost}(f_\theta) + (T-1)\cdot\Theta(d) \;=\; (1 - \mathsf{negl}(\kappa)) \cdot T_M,
+\]
+where the final equality uses $\Theta(d) \ll \mathsf{Cost}(f_\theta)$, so the $\mathsf{negl}(\kappa)$-fraction loss from $f_\theta$ dominates.
+Therefore $M_\theta$ is $\delta$-amortizable with $\delta = \mathsf{negl}(\kappa)$.
+\end{proof}
+
+\paragraph{Conclusion.}
+Combining Lemma~\ref{lem:uniform-cost-app} (uniform query cost) and Theorem~\ref{thm:amort-diff} ($\delta$-amortizability), stochastic denoising models satisfy both properties of Definition~\ref{def:model} and are therefore PoML-compatible.
+
+% ---- A.3 ----
+\subsection{Empirical Validation}
+\label{app:cia-experiments}
+
+We validate the theoretical analysis on Stable Diffusion v1-4~\cite{rombach2022ldm} ($\sim$860M parameters, $d = 16{,}384$ latent dimensions, $T = 50$ steps) to confirm that the input divergence predicted by Theorem~\ref{thm:cia-theorem} holds in practice and that the conditions for $\delta$-amortizability are satisfied in a real system.
+
+\subsubsection{Setup}
+\label{app:exp1}
+
+To simulate an adversary attempting to reuse computation from a prior inference on a similar query, we fix a text prompt~$c$ and a base seed~$r$ producing initial noise $x_T \sim \mathcal{N}(0, I_d)$. We construct perturbed inputs by adding $\eta \sim \mathcal{N}(0, \sigma^2 I_d)$ to the initial noise for perturbation scales $\sigma \in \{0.001, 0.01, 0.1, 0.5, 1.0\}$, representing adversaries with access to seeds ranging from near-identical ($\sigma = 0.001$) to moderately different ($\sigma = 1.0$). We also include a baseline with a fully independent seed~$r'$. For $N = 1{,}000$ base inputs, we record all intermediate activations at every denoising step and compute: (i)~per-step cosine similarity between base and perturbed activations, and (ii)~the minimum $L^\infty$ distance across all samples and steps.
+
+\subsubsection{Path Divergence Across Denoising Steps}
+
+Figure~\ref{fig:cosine_sim_app} shows cosine similarity between base and perturbed activations across denoising steps. The key observation is that with sufficient difference in the intial noise, similarity decreases monotonically with denoising depth. This shows that intermediate states diverge rapidly due to the per-step noise injection, as predicted by Theorem~\ref{thm:cia-theorem}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{results/sd_cosine_sim_vs_step.pdf}
+\caption{Cosine similarity between base and perturbed activations in Stable Diffusion across denoising steps. Even for the smallest perturbation ($\sigma = 0.001$), trajectories diverge steadily and converge to the independent-seed baseline (dashed). Shaded bands: $\pm 1$ std.\ dev.\ over $N = 1{,}000$ samples. This confirms that stochastic noise injection causes denoising paths to diverge.}
+\label{fig:cosine_sim_app}
+\end{figure}
+
+\subsubsection{Quantized Non-Reusability}
+
+Table~\ref{tab:min-linf-app} reports the minimum $L^\infty$ distance between base and perturbed activations across all $N = 1{,}000$ samples and all denoising steps---the best case for an adversary attempting computation reuse. A step's input is non-$\delta_q$-reusable (Definition~\ref{def:reusable-app}) whenever $\|x_t(r) - x_t(r')\|_\infty \geq \delta_q / 2$, i.e., whenever the minimum $L^\infty$ distance exceeds the quantization half-width.
+
+For the smallest perturbation ($\sigma = 0.001$), the minimum distance is $2.93 \times 10^{-3}$, which exceeds $\delta_q/2$ for all ZKML precision levels with $k \geq 8$. Hence, non-reusability holds across the full standard ZKML range $k \in [10, 18]$. In the PoML protocol, seeds are derived from cryptographic hashes and are therefore fully independent ($\sigma = \infty$), placing real deployments firmly in the regime where the $L^\infty$ distance far exceeds any practical quantization threshold.
+
+\begin{table}[t]
+  \centering
+  \caption{Minimum $L^\infty$ distance between base and perturbed activations across $N = 1{,}000$ samples and all denoising steps. In the PoML protocol, seeds are derived from cryptographic hashes and are fully independent, placing real deployments well beyond the largest perturbation shown here.}
+  \label{tab:min-linf-app}
+  \begin{tabular}{lr}
+    \toprule
+    $\boldsymbol{\sigma}$ & \textbf{Min $L^\infty$ distance} \\
+    \midrule
+    $0.001$ & $0.00293$ \\
+    $0.010$ & $0.02832$ \\
+    $0.100$ & $0.28076$ \\
+    $0.500$ & $0.75488$ \\
+    $1.000$ & $2.57617$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Summary.}
+The empirical results corroborate the theoretical analysis across all perturbation scales: stochastic noise injection at each denoising step produces activation differences that exceed practical quantization thresholds by orders of magnitude, rendering computation reuse infeasible. Combined with the theoretical guarantees of Theorems~\ref{thm:cia-theorem} and~\ref{thm:amort-diff}, this confirms that stochastic denoising models satisfy both properties of Definition~\ref{def:model} and are PoML-compatible.
+
+\section{Security Definitions}
+
+\subsection{Commitment Schemes}
+\label{app:com}
+
+\begin{definition}[Commitment Schemes] \label{def: commitment}
+     A \emph{commitment scheme} is a tuple $\Gamma = (\setup, \commit, \open)$ of $\ppt$ algorithms where:
+    \begin{itemize} %[label=\textbullet,itemsep=1em]
+        \item $\setup(1^{\lambda}) \rightarrow \ppnew$ takes security parameter $\lambda$ and generates public parameters $\text{pp}$;
+        \item $\commit(\ppnew; m) \rightarrow (\com,r)$ takes a secret message $m$, outputs a public commitment $Com$ and a randomness $r$ used in the commitment.
+        \item $\open(\ppnew, \com; m, r) \rightarrow b \in \{0,1\}$ verifies the opening of the commitment $C$ to the message $m$ with the randomness $r$.
+    \end{itemize}
+    
+    $\Gamma$ has the following properties:
+    \begin{itemize} %[label=\textbullet]
+    \item {\bf Binding.} For all $\ppt$ adversaries $\mathcal{A}$, it holds that:
+    \[
+        \Pr\left[
+            b_0 = b_1 \neq 0 \land m_0 \neq m_1 :
+            \begin{array}{l}
+                \ppnew \leftarrow \setup(1^{\lambda}) \\
+                (\com, m_0, m_1, r_0, r_1) \leftarrow \mathcal{A}(\ppnew) \\
+                b_0 \leftarrow \open(\ppnew, \com, m_0, r_0) \\
+                b_1 \leftarrow \open(\ppnew, \com, m_1, r_1)
+            \end{array}
+        \right] \leq \negligible(\lambda)
+    \]
+    \item {\bf Hiding.} For all $\ppt$ adversaries $\mathcal{A}$, it holds that:
+    \[
+       \left|\Pr\left[
+            b_0 = b' :
+            \begin{array}{l}
+                \text{pp} \leftarrow \setup(1^{\lambda}) \\
+                (m_0, m_1, \text{st}) \leftarrow \mathcal{A}(\text{pp}) \\
+                b \overset{\$}{\leftarrow} \{0, 1\} \\
+                (C_b, r_b) \leftarrow \commit(\text{pp}, m_b) \\
+                b' \leftarrow \mathcal{A}(\text{pp}, \text{st}, C_b)
+            \end{array}
+        \right] - \frac{1}{2} \right| = \negligible(\lambda)
+    \]
+    \end{itemize}
+
+    \end{definition}
+
+\subsection{Zero-Knowledge Proofs}
+\label{app:zk}
+
+\begin{definition}[Non-Interactive Zero-Knowledge proof-of-knowledge Systems] \label{def: NIZK systems}
+    A {\em non-interactive zero-knowledge proof-of-knowledge system (NIZKPoK)} for an \NP-language $L$ with the corresponding relation $\relation{L}$ 
+    is a non-interactive protocol $\Pi = (\setup, \prover, \verifier)$, where:
+    \begin{itemize}%[label=\textbullet,itemsep=1em]
+        \item $\setup( 1^{\lambda}) \rightarrow \crs$ takes as the input a security parameter $\lambda$. It outputs a common reference string $\crs$.
+        \item $\prover(\crs, x, w) \rightarrow \pi$ takes as the input $\crs$, the statement $x$ and the witness $w$, s.t. $(x, w) \in \relation{L}$. It outputs the proof $\pi$.
+        \item $\verifier(\crs, x, \pi) \rightarrow b \in \{0,1\}$ takes as the input $\crs$, $x$ and $\pi$. It outputs 1 to accept and 0 to reject.
+    \end{itemize}
+    
+    $\Pi$ has the following properties:
+    \begin{itemize}%[label=\textbullet]
+    \item {\bf Completeness.} For all $\lambda \in \NN$, and all $(x,w) \in \relation{L}$, it holds that:
+    $$\condprob{\verifier(\crs, x, \prover(\crs, x, w)) = 1}{\crs \sample \setup(1^{|x|}, 1^\lambda)} = 1 - \negligible(\lambda)$$
+    
+    \item {\bf Soundness.} For all $\ppt$ provers $\prover^{\star}$, s.t. for all $\lambda \in \NN$, and all $x\notin L$, it holds that:
+    $$\condprob{\verifier(\crs,x,\pi) = 1}{\crs \sample \setup(1^{|x|}, 1^{\lambda}); \pi \sample \prover^{\star}(\crs)} \leq \negligible(\lambda).$$
+    
+    \item {\bf Zero knowledge.} There exists a $\ppt$ simulator $\simu$ such that 
+    for every $(x,w)\in \relation{L}$, the distribution ensembles
+    $\{(\crs,\pi): \crs \sample \setup(1^{|x|}, 1^{\lambda});$ $\pi \sample \prover(\crs, x, w)\}_{\lambda \in \NN}$
+    and $\{\simu(1^{\lambda},x)\}_{\lambda\in\NN}$
+    are computationally indistinguishable.
+    
+    \item {\bf Proof of Knowledge.} For all $\ppt$ provers $\prover$, there exists an extractor $\mathcal{E}$ such that
+    $$\condprob{\mathcal{E}(x,\prover) = w}{(x,w) \in \relation{L}} = 1 - \negligible(\lambda)$$
+    \end{itemize}
+
+    \end{definition}
+

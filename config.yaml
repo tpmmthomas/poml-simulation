@@ -1,0 +1,19 @@
+# PoML Simulation Configuration
+
+model_path: "model/network.onnx"
+ezkl_artifacts_dir: "model/"
+
+num_miners: 4
+num_queries: 20
+query_rate: 2.0  # queries per second
+
+# Difficulty target (hex) — lower = harder
+# This is set high for the PoC so blocks are produced quickly
+difficulty: "0x00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+block_reward: 50
+network_latency_ms: 100
+max_queries_per_block: 10
+
+input_shape: [1, 2, 8, 8]
+seed: 42

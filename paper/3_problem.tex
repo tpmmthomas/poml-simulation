@@ -1,0 +1,122 @@
+\section{Problem Description}
+\label{sec:problem}
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.8\textwidth]{plots/PoML.drawio.png}
+    \caption{A high-level diagram of the proposed PoML blockchain. Users submit model queries to the mempool as pending requests. Model nodes retrieve these requests and compete to produce a valid block by executing model inference and generating zero-knowledge proofs attesting to correct execution. The first node to produce a valid block appends it to the blockchain and receives the associated rewards.}
+    \label{fig:blockchain-poml}
+\end{figure*}
+
+We envision a blockchain architecture as illustrated in Figure~\ref{fig:blockchain-poml}. End users submit inference queries to the blockchain’s memory pool (mempool), where each query contains input data for which the user seeks a model inference result. Model nodes, also referred to as \emph{miners}, retrieve pending queries from the mempool and attempt to produce the next block by executing inference on the model and generating zero-knowledge proofs (ZKPs) attesting to the correctness of the computation. A miner successfully produces a block when it constructs what we refer to as a \emph{valid block}, containing verified inference outputs and coin transactions (not shown here for brevity), which is then appended to the blockchain in exchange for rewards.
+
+The definition of a valid block lies at the core of our proposed Proof-of-ML-Inference (PoML) consensus mechanism and constitutes the central technical challenge of this work. The consensus protocol must be robust against adversarial behavior, ensuring that no participant can consistently produce valid blocks without honestly performing the required computation. This leads us to the following research question:
+
+\noindent \emph{How can machine learning inference and the generation of corresponding zero-knowledge proofs be leveraged to design a robust and decentralized PoML consensus mechanism that achieves comparable security to Bitcoin's protocol?}
+
+\subsection{The Model Class $\mathcal{K}$}
+\label{subsec:model-class}
+
+We define a class $\mathcal{K}$ of ML models suitable for use in PoML. Each model in $\mathcal{K}$ must satisfy two structural properties that we formalise below.
+
+In Bitcoin, a hash function is modelled as a random oracle---any adversary learns $H(x)$ only by querying the oracle on $x$, and no shortcut exists. To achieve similar security in PoML, we require that model inference behaves analogously: the only way to obtain the output is to perform the full computation, with no shortcuts or precomputation.
+
+We consider stochastic ML models $M_\theta$ parameterised by weights $\theta$ that accept two inputs: a \emph{conditioning input} $c$ (e.g., a text embedding produced by an encoder) and a \emph{random seed} $r \in \{0,1\}^\kappa$. Given both inputs, the model produces an output $y = M_\theta(c, r)$. The conditioning input captures the user's query, while the seed controls all stochasticity in the inference process.
+
+\thomas{Michele, Rik: Tried my best to define this, I know it is not perfect. Can you see if it is ok, or how to change it?}
+
+\begin{definition}[Uniform query cost]
+\label{def:uniform-cost}
+Let $\mathsf{Cost}(\cdot)$ be a function that counts the number of floating-point operations (FLOPs) of an evaluation. $M_\theta$ is said to have uniform query cost if for some fixed constant $k$, it satisfies $\mathsf{Cost}(M_\theta(c,r)) = k$ for all $(c, r)$.
+\end{definition}
+
+\begin{definition}[$\delta$-amortizability]
+\label{def:delta-reuse}
+Let $M_\theta$ be a model with uniform query cost and $\mathsf{Cost}(\cdot)$ be defined as above (Def~\ref{def:uniform-cost}). Assume $T_M:=\mathsf{Cost}(M_\theta)$ is the fixed cost of querying $M_\theta$ with no prior state. We say $M_\theta$ is \emph{$\delta$-amortizable} if for every probabilistic polynomial-time adversary $\mathcal{A}$, the following holds.
+
+Consider the experiment $\textsf{Reuse}_{\mathcal{A}, M_\theta}(\kappa)$:
+\begin{enumerate}
+    \item \textbf{(Preprocessing)} $\mathcal{A}$ receives $\theta$ and may make polynomially many adaptive queries to $M_\theta(\cdot, \cdot)$, retaining arbitrary state $\textsf{st}$ (including any cached intermediate activations, partial computations, or precomputed lookup tables).
+    \item \textbf{(Challenge)} A fresh seed is sampled: $r^* \leftarrow \{0,1\}^\kappa$, and $\mathcal{A}$ receives $r^*$.
+    \item \textbf{(Evaluation)} $\mathcal{A}(\textsf{st}, r^*)$ selects $c^*$ and outputs $y^* = M_\theta(c^*, r^*)$.
+\end{enumerate}
+
+Let $T_{\mathcal{A}}:= \mathsf{Cost}(\mathcal{A}(\textsf{st}, r^*))$ denote the cost of step~3. Then:
+\begin{equation}
+    T_{\mathcal{A}} \geq (1 - \delta) \cdot T_M
+\end{equation}
+where $\delta \in [0, 1)$, with overwhelming probability. Informally, the adversary's prior evaluations and cached state grant at most a $\delta$-fraction speedup over a fresh evaluation.
+\end{definition}
+
+
+\begin{definition}[PoML-compatible model]
+\label{def:model}
+$M_\theta$ is said to be PoML-compatible if it has uniform query cost and is $\delta$-amortizable for a fixed $\delta$ in the PoML protocol. We denote $\mathcal{K}$ as the class of all PoML-compatible models.
+\end{definition}
+
+Intuitively, uniform query cost ensures that every inference incurs the same computational expense, preventing an adversary from cherry-picking cheap inputs. The $\delta$-amortizability property guarantees that distinct seeds produce distinct execution traces, so no intermediate computation from one inference can be reused for another, and there is no shortcut to performing each inference independently.
+
+\subsubsection{Instantiation: Stochastic Denoising Models}
+\label{subsec:diffusion-instantiation}
+
+Stochastic denoising diffusion models (Section~\ref{subsec:diffusion-models}) are a natural instantiation of $\mathcal{K}$. They satisfy both properties of Definition~\ref{def:model}: \thomas{TODO check model definition clear enough?}
+\begin{enumerate}
+    \item \textbf{Uniform query cost.} The denoising network $f_\theta$ has a fixed architecture with predetermined layer dimensions, so each evaluation traverses an identical computational graph regardless of input values.
+    \item \textbf{$\delta$-amortizability.} At each step $t \geq 2$, noise scaled by $\sigma_t > 0$ is injected into the denoiser output (eq.~\eqref{eq:ddpm-step-prelim}). Because distinct seeds produce independent noise vectors, intermediate states at every denoising step diverge across evaluations with overwhelming probability (Theorem~\ref{thm:cia-theorem}).
+\end{enumerate}
+The full argument that stochastic denoising models are PoML-compatible is given in Appendix~\ref{app:cia}.
+
+\subsection{Solution Desiderata}
+
+We require the PoML puzzle to satisfy properties that enable a formal security reduction to the Bitcoin backbone protocol~\cite{GKL20}. Concretely, our goal is to show that the PoML protocol inherits the three backbone guarantees established in~\cite{GKL20}:
+
+\begin{description}[nosep]
+\item[Common Prefix (CP).] For any parameter $k \in \mathbb{N}$, removing the last $k$ blocks from any honest party's chain yields a prefix of every other honest party's chain. This guarantees that sufficiently deep transactions are irrevocable.
+\item[Chain Quality (CQ).] In any sufficiently long window of consecutive blocks on an honest party's chain, at least a fraction $\mu > 0$ were contributed by honest parties. This prevents an adversary from dominating the chain content.
+\item[Chain Growth (CG).] The chain of any honest party grows by at least $\tau$ blocks per round (in expectation over sufficiently many rounds), ensuring liveness.
+\end{description}
+
+This reduction is carried out in Section~\ref{sec:reduction}. Informally, to achieve the three guarantees, the PoML puzzle must satisfy the following structural properties:
+
+\begin{enumerate}
+    \item \textbf{Grinding-resistance.} An adversary cannot cherry-pick model inputs to reduce inference and proof cost. 
+
+    \item \textbf{Pre-computation resilience.} Problem instances cannot be manufactured or predicted in advance.
+
+    \item \textbf{Amortisation-freeness.} Producing $k$ valid inference--proof pairs costs at least $k$ times the cost of a single pair. This is guaranteed by the $\delta$-amortizability property of the model class~$\mathcal{K}$ (Definition~\ref{def:delta-reuse}).
+    
+    \item \textbf{Adjustable difficulty.} The block difficulty is dynamically adjustable so that block time can be maintained as the network's aggregate computational power changes.
+
+    \item \textbf{Efficient verification.} The running time of the verification algorithm is at most polylogarithmic in the prover's inference time.
+
+    \item \textbf{Progress-freeness.} The probability of finding a valid block is independent of the computational effort already expended, ensuring mining is memoryless and preventing large miners from deterministically outpacing smaller ones.
+\end{enumerate}
+
+% \michele{it is not clear why we listed the above properties. Do we show that our puzzle satisfies them? }
+
+% ---- OLD DESIDERATA (verbal, from Ali et al.) ----
+% \begin{itemize}
+%     \item \textbf{Asymmetry.}  
+%     In the absence of trust between nodes, each node must independently verify the correctness of a solution. Verification should therefore be computationally inexpensive, while finding a solution should require substantial effort.
+%
+%     \item \textbf{Granularity and Parametrization.}  
+%     As the network's computational power would scale with Moore's law, the difficulty of the puzzle should be dynamically adjustable to achieve desired network parameters, such as target block time.
+%
+%     \item \textbf{Amortization-Freeness.}  
+%     Producing multiple valid solutions should incur a proportional increase in computational cost compared to producing a single solution.
+%
+%     \item \textbf{Independence.}  
+%     Solving one instance of the puzzle should not provide any computational advantage when solving other instances.
+%
+%     \item \textbf{Unforgeability.}  
+%     An adversary should not be able to construct puzzle instances that allow solutions to be precomputed in advance.
+%
+%     \item \textbf{Freshness.}  
+%     A solution should not be valid indefinitely and cannot be used by other users.
+%
+%     \item \textbf{Progress-Freeness.}  
+%     The probability of finding a solution should be independent of the effort already expended on the current instance.
+%
+%     \item \textbf{Public Verifiability.}  
+%     Any party should be able to verify a solution non-interactively, without requiring participation from the prover.
+% \end{itemize}
+

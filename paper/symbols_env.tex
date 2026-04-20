@@ -1,0 +1,383 @@
+%--------------------------------------------------------------
+%New Style boxes
+%--------------------------------------------------------------
+
+
+
+%----- Box Environment ---------------------------------------------------------
+\RequirePackage{mdframed}
+
+%Basic box structure with title box
+\newenvironment{titlebox}[5]
+{\mdfsetup{
+		style=#2,
+		innertopmargin=1.1\baselineskip,
+		%skipabove={\dimexpr0.2\baselineskip+\topskip\relax},
+		%skipbelow={1em},needspace=3\baselineskip,
+		singleextra={\node[#3,right=10pt,overlay] at (P-|O){~{\sffamily\bfseries #1 }};},%
+		firstextra={\node[#3,right=10pt,overlay] at (P-|O) {~{\sffamily\bfseries #1 }};},
+		frametitleaboveskip=9em,
+		innerrightmargin=5pt
+		%skipabove={\dimexpr0.7\baselineskip+\topskip\relax},
+	}
+	\newcommand{\TitleCaption}{#4}
+	\newcommand{\TitleLabel}{#5}
+	\begin{mdframed}[font=\small]
+		\setlist[itemize]{leftmargin=15pt}\setlist[enumerate]{leftmargin=15pt}\raggedright% 
+	}
+	{\end{mdframed}
+	\vspace{-0.5em}
+	{\captionof{figure}{\small \TitleCaption}\label{\TitleLabel}}
+	\medskip
+}
+
+%title box style
+\tikzstyle{normal} = [thick, fill=white, text=black, draw, rounded corners, rectangle, minimum height=.7cm, inner sep=3pt]
+\tikzstyle{gray} = [thick, fill=gray!90, text=white, rounded corners, rectangle, minimum height=.7cm, inner sep=3pt]
+
+%box style
+\mdfdefinestyle{commonbox}{%
+	%align=center, middlelinewidth=1.1pt,userdefinedwidth=\linewidth
+	%innerrightmargin=0pt,innerleftmargin=2pt,innertopmargin=5pt,
+	%splittopskip=7pt,splitbottomskip=3pt
+	%Actual Values - 
+	%innerrightmargin=0pt,innerleftmargin=5pt,innertopmargin=5pt,
+	%splittopskip=15pt,splitbottomskip=15pt
+}
+
+
+\mdfdefinestyle{roundbox}{style=commonbox,roundcorner=5pt,userdefinedwidth=\linewidth}
+
+\newenvironment{systembox}[3]
+{\vspace{\baselineskip}\begin{titlebox}{Functionality \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+
+\newenvironment{gsystembox}[3]
+{\vspace{\baselineskip}\begin{titlebox}{Global Functionality \normalfont #1}{roundbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+	
+	
+
+\newenvironment{protocolbox}[3]
+{\begin{titlebox}{Protocol \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+
+
+\newenvironment{algobox}[3]
+{\begin{titlebox}{Algorithm \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+
+\newenvironment{reductionbox}[3]
+{\begin{titlebox}{Reduction \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+
+\newenvironment{gamebox}[3]
+{\begin{titlebox}{Game \normalfont #1}{commonbox}{gray}{#2}{#3}}
+	{\end{titlebox}}
+
+\newenvironment{simulatorbox}[3]
+{\begin{titlebox}{Simulator \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}}
+%-------------------------------------------------------------------------------
+
+
+
+%-------------------------------------------------------------------------------
+%Split Box for IEETran Version
+%-------------------------------------------------------------------------------
+%Basic box structure with title box
+\newenvironment{splittitlebox}[5]
+{\mdfsetup{
+		style=#2,
+		innertopmargin=1.1\baselineskip,
+		skipabove={\dimexpr0.2\baselineskip+\topskip\relax},
+		skipbelow={1em},needspace=3\baselineskip,
+		singleextra={\node[#3,right=10pt,overlay] at (P-|O){~{\sffamily\bfseries #1 }};},%
+		firstextra={\node[#3,right=10pt,overlay] at (P-|O) {~{\sffamily\bfseries #1 }};},
+		frametitleaboveskip=9em,
+		innerrightmargin=5pt
+		%skipabove={\dimexpr0.7\baselineskip+\topskip\relax},
+	}
+	\newcommand{\TitleCaption}{#4}
+	\newcommand{\TitleLabel}{#5}
+	\begin{mdframed}[font=\small]
+		\setlist[itemize]{leftmargin=13pt}\setlist[enumerate]{leftmargin=13pt}\raggedright% 
+	}
+	{\end{mdframed}
+	\vspace{-1em}
+	{\captionof{figure}{\small \TitleCaption}\label{\TitleLabel}}
+	\medskip
+}
+
+\mdfdefinestyle{commonsplitbox}{%
+	align=center, middlelinewidth=1.1pt,userdefinedwidth=\linewidth
+	innerrightmargin=0pt,innerleftmargin=2pt,innertopmargin=5pt,
+	splittopskip=7pt,splitbottomskip=3pt
+	%Actual Values - 
+	%innerrightmargin=0pt,innerleftmargin=5pt,innertopmargin=5pt,
+	%splittopskip=15pt,splitbottomskip=15pt
+}
+
+\newenvironment{functionalitysplitbox}[3]
+{\begin{splittitlebox}{Functionality \normalfont #1}{commonsplitbox}{normal}{#2}{#3}}
+	{\end{splittitlebox}}
+
+
+\newenvironment{parametersplitbox}[2]
+{\begin{splittitlebox}{Parameters}{commonsplitbox}{normal}{#1}{#2}}
+	{\end{splittitlebox}}
+
+
+\newenvironment{protocolsplitbox}[3]
+{\begin{splittitlebox}{Protocol \normalfont #1}{commonsplitbox}{normal}{#2}{#3}}
+	{\end{splittitlebox}}
+	
+\newenvironment{schemesplitbox}[3]
+{\begin{splittitlebox}{Functionality \normalfont #1}{commonsplitbox}{normal}{#2}{#3}}
+	{\end{splittitlebox}}
+	
+	
+\newenvironment{simulatorsplitbox}[3]
+{\begin{splittitlebox}{Simulator \normalfont #1}{commonsplitbox}{normal}{#2}{#3}}
+	{\end{splittitlebox}}	
+	
+\newenvironment{experimentsplitbox}[3]
+{\begin{splittitlebox}{Experiment \normalfont #1}{commonsplitbox}{normal}{#2}{#3}}
+	{\end{splittitlebox}}	
+
+
+%------------------------------------------------------------------------------
+% Full Width Environments
+%------------------------------------------------------------------------------
+
+\newenvironment{systembox*}[3]
+{\begin{strip}
+\vspace{\baselineskip}\begin{titlebox}{Functionality \normalfont #1}{roundbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{gsystembox*}[3]
+{\begin{strip}
+\vspace{\baselineskip}\begin{titlebox}{Global Functionality \normalfont #1}{roundbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{protocolbox*}[3]
+{\begin{strip}
+\begin{titlebox}{Protocol \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{algobox*}[3]
+{\begin{strip}
+\begin{titlebox}{Algorithm \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{reductionbox*}[3]
+{\begin{strip}
+\begin{titlebox}{Reduction \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{gamebox*}[3]
+{\begin{strip}
+\begin{titlebox}{Game \normalfont #1}{commonbox}{gray}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+\newenvironment{simulatorbox*}[3]
+{\begin{strip}
+\begin{titlebox}{Simulator \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{titlebox}
+\end{strip}}
+
+
+
+
+%------------------------------------------------------------------------------
+%Basic box structure with mytitle box without embossed title
+%------------------------------------------------------------------------------
+
+%box style
+\mdfdefinestyle{mycommonbox}{%
+	align=center, middlelinewidth=1.1pt,userdefinedwidth=\linewidth
+	innerrightmargin=0pt,innerleftmargin=2pt,innertopmargin=3pt,
+	splittopskip=7pt,splitbottomskip=3pt
+	%Actual Values - innerrightmargin=0pt,innerleftmargin=5pt,innertopmargin=5pt,
+}
+\mdfdefinestyle{myroundbox}{style=mycommonbox,roundcorner=5pt,userdefinedwidth=\linewidth}
+
+\newenvironment{titlebox*}[5]
+{\mdfsetup{
+		style=#2,
+		innertopmargin=0.3\baselineskip,
+		skipabove={0.4em},
+		skipbelow={1em},needspace=3\baselineskip,
+		frametitleaboveskip=5em,
+		innerrightmargin=5pt
+	}
+	\newcommand{\TitleCaption}{#4}
+	\newcommand{\TitleLabel}{#5}
+	\begin{mdframed}[font=\small]
+		\setlist[itemize]{leftmargin=13pt}\setlist[enumerate]{leftmargin=13pt}\raggedright% 
+	}
+	{\end{mdframed}
+	\vspace{-1.5em}
+	{\captionof{figure}{\normalfont \TitleCaption}\label{\TitleLabel}}
+	\medskip
+}
+
+%------------------------------------------------------------------------------
+% Box Environments without embossed title
+%------------------------------------------------------------------------------
+
+\newenvironment{mysystembox}[3]
+{\begin{titlebox*}{Functionality \normalfont #1}{myroundbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{mygsystembox}[3]
+{\begin{titlebox*}{Global Functionality \normalfont #1}{myroundbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{myprotocolbox}[3]
+{\begin{titlebox*}{Protocol \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{myalgobox}[3]
+{\begin{titlebox*}{Algorithm \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{myreductionbox}[3]
+{\begin{titlebox*}{Reduction \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{mygamebox}[3]
+{\begin{titlebox*}{Game \normalfont #1}{mycommonbox}{gray}{#2}{#3}}
+	{\end{titlebox*}}
+
+\newenvironment{mysimulatorbox}[3]
+{\begin{titlebox*}{Simulator \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+	{\end{titlebox*}}
+%-------------------------------------------------------------------------------
+
+
+%------------------------------------------------------------------------------
+% Full Width Environments without embossed title
+%------------------------------------------------------------------------------
+
+\newenvironment{mysystembox*}[3]
+{\begin{strip}
+		\vspace{\baselineskip}\begin{titlebox*}{Functionality \normalfont #1}{myroundbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{mygsystembox*}[3]
+{\begin{strip}
+		\vspace{\baselineskip}\begin{titlebox*}{Global Functionality \normalfont #1}{myroundbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{myprotocolbox*}[3]
+{\begin{strip}
+		\begin{titlebox*}{Protocol \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{myalgobox*}[3]
+{\begin{strip}
+		\begin{titlebox*}{Algorithm \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{myreductionbox*}[3]
+{\begin{strip}
+		\begin{titlebox*}{Reduction \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{mygamebox*}[3]
+{\begin{strip}
+		\begin{titlebox*}{Game \normalfont #1}{mycommonbox}{gray}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+\newenvironment{mysimulatorbox*}[3]
+{\begin{strip}
+		\begin{titlebox*}{Simulator \normalfont #1}{mycommonbox}{normal}{#2}{#3}}
+		{\end{titlebox*}
+\end{strip}}
+
+
+
+
+
+
+%-------------------------------------------------------------------------------
+% Basic protocol box without Algohead NDSS
+%-------------------------------------------------------------------------------
+%Basic box structure with title box
+\newenvironment{mytbox}[5]
+{\mdfsetup{
+		style=#2,
+		innertopmargin=1.8\baselineskip,
+		skipabove={\dimexpr0.2\baselineskip+\topskip\relax},
+		skipbelow={1em},needspace=3\baselineskip,
+		singleextra={\node[#3,right=10pt,overlay] at (P-|O){~{\sffamily\bfseries #1 }};},%
+		firstextra={\node[#3,right=10pt,overlay] at (P-|O) {~{\sffamily\bfseries #1 }};},
+		frametitleaboveskip=9em,
+		innerrightmargin=5pt
+		%skipabove={\dimexpr0.7\baselineskip+\topskip\relax},
+	}
+	\newcommand{\TitleCaption}{#4}
+	\newcommand{\TitleLabel}{#5}
+	\begin{mdframed}[font=\small]
+		\setlist[itemize]{leftmargin=13pt}\setlist[enumerate]{leftmargin=13pt}\raggedright% 
+	}
+	{\end{mdframed}
+	\vspace{-1.5em}
+	{\captionof{figure}{\small \TitleCaption}\label{\TitleLabel}}
+	\medskip
+}
+
+\newenvironment{mytsplitbox}[5]
+{\mdfsetup{
+		style=#2,
+		innertopmargin=1.8\baselineskip,
+		skipabove={\dimexpr0.2\baselineskip+\topskip\relax},
+		skipbelow={1em},needspace=3\baselineskip,
+		singleextra={\node[#3,right=10pt,overlay] at (P-|O){~{\sffamily\bfseries #1 }};},%
+		firstextra={\node[#3,right=10pt,overlay] at (P-|O) {~{\sffamily\bfseries #1 }};},
+		frametitleaboveskip=9em,
+		innerrightmargin=5pt
+		%skipabove={\dimexpr0.7\baselineskip+\topskip\relax},
+	}
+	\newcommand{\TitleCaption}{#4}
+	\newcommand{\TitleLabel}{#5}
+	\begin{mdframed}[font=\small]
+		\setlist[itemize]{leftmargin=13pt}\setlist[enumerate]{leftmargin=13pt}\raggedright% 
+	}
+	{\end{mdframed}
+	\vspace{-0.8em}
+	{\captionof{figure}{\small \TitleCaption}\label{\TitleLabel}}
+	\medskip
+}
+
+\newenvironment{mypbox}[3]
+{\begin{mytbox}{Protocol \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{mytbox}}
+
+\newenvironment{mypsplitbox}[3]
+{\begin{mytsplitbox}{Protocol \normalfont #1}{commonbox}{normal}{#2}{#3}}
+	{\end{mytsplitbox}}
+
+
+
+
+
+
+
+
+
+
+

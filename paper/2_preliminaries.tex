@@ -1,0 +1,127 @@
+\section{Preliminaries}
+\label{sec:preliminaries}
+% \subsection{Machine Learning}
+% In supervised machine learning, we compute a model $h$ from a training set $D=\{(x_i,y_i)\}_{i=1}^n$, where each $x_i$ has label $y_i$ (sometimes $z_i=(x_i,y_i)$). An algorithm $A$ searches a hypothesis space $\mathcal{H}$ for $h$ minimizing empirical loss $L_D(h)=\frac{1}{n}\sum_{i=1}^n \ell\bigl(h(x_i),y_i\bigr)$,
+% where $\ell$ quantifies the error between prediction $y'=h(x)$ and true $y$. Common choices include squared loss $\ell(y',y)=(y'-y)^2$ for regression and zero-one loss $\ell(y',y)=\mathbf{1}[y'\neq y]$ for classification. For probabilistic outputs $\vec y'$, cross-entropy $\ell_{\mathrm{CE}}(\vec y',\vec y)=-\sum_{i=1}^d \vec y^i\ln\vec y'^i$ is typical, where $\vec y$ is a one-hot vector. We denote models by $M$ and, when parameterized by $\theta$, by $M_\theta$.
+
+\subsection{Diffusion Models}
+\label{subsec:diffusion-models}
+
+Diffusion models~\cite{ho2020ddpm} are a class of generative models that produce data by iteratively denoising random noise. The forward process gradually corrupts a data sample $x_0$ by adding Gaussian noise over $T$ steps, producing a sequence $x_1, x_2, \ldots, x_T$ that converges to pure noise $x_T \sim \mathcal{N}(0, I_d)$. Generation reverses this process: starting from $x_T$, a learned denoising network $f_\theta$ (typically a U-Net architecture) predicts the denoised output at each step, conditioned on the current noisy state, a timestep index $t$, and an optional conditioning signal $c$ (e.g., a text embedding).
+
+In the stochastic DDPM~\cite{ho2020ddpm} (Denoising Diffusion Probabilistic Models) sampling variant, each reverse step adds fresh Gaussian noise scaled by a schedule parameter $\sigma_t > 0$:
+\begin{equation}
+\label{eq:ddpm-step-prelim}
+    x_{t-1} = f_\theta(x_t, c, t) + \sigma_t z_t, \quad z_t \sim \mathcal{N}(0, I_d), \quad t = T, T{-}1, \ldots, 2,
+\end{equation}
+with the final output $y = f_\theta(x_1, c, 1)$ produced without noise. This noise injection at every step distinguishes stochastic (DDPM) sampling from deterministic variants such as DDIM~\cite{song2021ddim}, and is a key property for the security analysis of our protocol.
+
+In practice, all stochasticity can be derived from a single random seed $r \in \{0,1\}^\kappa$ via a hash function: the initial noise is sampled as $x_T = H(r \| 0)$ and each per-step noise vector as $z_t = H(r \| T-t+1)$, making the generation fully deterministic given $r$ and the conditioning signal $c$.  Figure~\ref{fig:diffusion-pipeline} illustrates this pipeline.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    ubox/.style={draw=orange!70!black, rounded corners=2pt, minimum height=10mm,
+                 minimum width=18mm, align=center, fill=orange!10, font=\small},
+    nbox/.style={draw=blue!70!black, rounded corners=2pt, minimum height=7mm,
+                 minimum width=16mm, align=center, fill=blue!10, font=\scriptsize},
+    hbox/.style={draw=gray!70!black, rounded corners=2pt, minimum height=7mm,
+                 minimum width=18mm, align=center, fill=gray!10, font=\scriptsize},
+]
+  % Inputs
+  \node (r) at (-1.8,0) {$r$};
+  \node[hbox, font=\small] (hash) at (0.4,0) {$H(r\|\cdot)$};
+  % x_T
+  \node (xT) at (2.2,0) {$x_T$};
+  % Step T: UNet + noise
+  \node[ubox] (u1) at (4.1,0) {$f_\theta(\cdot, c, T)$};
+  \node[nbox] (n1) at (4.1,1.4) {$+\sigma_T z_T$};
+  % x_{T-1}
+  \node (xTm1) at (6.3,0) {$x_{T{-}1}$};
+  % Step T-1: UNet + noise
+  \node[ubox] (u1b) at (8.2,0) {$f_\theta(\cdot, c, T{-}1)$};
+  \node[nbox] (n1b) at (8.2,1.4) {$+\sigma_{T{-}1} z_{T{-}1}$};
+  % dots and final
+  \node (dots) at (10.6,0) {$\cdots$};
+  \node[ubox] (u2) at (12.4,0) {$f_\theta(\cdot, c, 1)$};
+  \node (y) at (14.2,0) {$y$};
+  % Conditioning
+  \node (c) at (8.2,-1.8) {$c = e(x)$};
+  % Main path arrows
+  \draw[thick,->] (r) -- (hash);
+  \draw[thick,->] (hash) -- (xT);
+  \draw[thick,->] (xT) -- (u1);
+  \draw[thick,->] (u1) -- (n1);
+  \draw[thick,->] (n1.east) -| (xTm1.north);
+  \draw[thick,->] (xTm1) -- (u1b);
+  \draw[thick,->] (u1b) -- (n1b);
+  \draw[thick,->] (n1b.east) -| ++(0.8,-1.4) -- (dots);
+  \draw[thick,->] (dots) -- (u2);
+  \draw[thick,->] (u2) -- (y);
+  % Conditioning arrows
+  \draw[thick,->,dashed] (c) -| (u1.south);
+  \draw[thick,->,dashed] (c) -- (u1b.south);
+  \draw[thick,->,dashed] (c) -| (u2.south);
+  % Hash outputs for noise
+  \draw[thick,->,dotted] (hash.north) -- ++(0,2.2) -| (n1.north);
+  \draw[thick,->,dotted] (hash.north) ++(0,2.2) -| (n1b.north);
+\end{tikzpicture}
+\caption{Stochastic diffusion generation pipeline. A seed $r$ is expanded via a hash function $H$: the initial noise is $x_T = H(r\|0)$ and each per-step noise vector is $z_t = H(r\|T-t+1)$. Each denoising step applies $f_\theta$ (a neural network model) conditioned on $c = e(x)$ and adds scaled noise. The final step produces output $y$ without noise addition.}
+\label{fig:diffusion-pipeline}
+\end{figure*}
+
+The denoising network $f_\theta$ is composed of standard neural network building blocks---convolutional layers, group normalisation, element-wise activations (SiLU/GeLU), self-attention and cross-attention layers, and residual connections---all arranged in a fixed architecture with predetermined layer dimensions.
+
+\subsection{Cryptographic protocols}
+\thomas{TODO asymmetric encryption, VRF add}
+% This section reviews commitment schemes, zero-knowledge proofs (ZKPs), and multi-party computation (MPC). We use $\lambda$ as the security parameter and assume familiarity with computational indistinguishability and negligible functions $\negligible$.
+
+\subsubsection{Commitment schemes}
+\label{def: commitment}
+Informally, a commitment scheme is a tuple $\Gamma = (\setup,\allowbreak \commit, \open)$ of $\ppt$ algorithms where: 
+\begin{itemize} [itemsep=0em,nosep]
+        \item $\setup(1^{\lambda}) \rightarrow \ppnew$ takes security parameter $\lambda$ and generates public parameters $\text{pp}$;
+        \item $\commit(\ppnew; m) \rightarrow (\com,r)$ takes a secret message $m$, outputs a public commitment $Com$ and a randomness $r$ used in the commitment.
+        \item $\open(\ppnew, \com; m, r) \rightarrow b \in \{0,1\}$ verifies the opening of the commitment $C$ to the message $m$ with the randomness $r$.
+\end{itemize}
+
+We require two main security properties: \emph{hiding} and \emph{binding}. Hiding ensures no $\ppt$ adversary can determine the committed message from $\com$. Binding ensures $\com$ can be opened to only one specific message. See App.~\ref{app:com} for formal definitions.
+
+% \subsubsection{Merkle Tree Commitments}
+% A Merkle tree commitment uses a collision-resistant hash function $H$ to commit to a vector $(m_1,$ $\ldots,$ $m_n)$ by hashing leaves and iteratively hashing pairs up a binary tree; the commitment is the root, and an opening is the $O(\log n)$-length authentication path for an index $i$.
+
+% A merkle tree commitment is a tuple of PPT algorithms $\Gamma = (\mtsetup,\mtcommit,\mtopen,\mtverify)$ where:
+% \begin{itemize}[leftmargin=1.25em]
+%   \item $\mtsetup(1^\lambda)\to\ppnew$: generates public parameters $\ppnew$./
+%   \item $\mtcommit(\ppnew; m_1,\ldots,m_n)\to(\com,\st)$: compute leaf and internal hashes; output root $\com$ and state $\st$.
+%   \item $\mtopen(\ppnew,\st; i)\to\pi_i$: output the sibling-hash path authenticating position $i$.
+%   \item $\mtverify(\ppnew,\com; i,m_i,\pi_i)\to b$: recompute the root from $(i,$ $m_i,$ $\pi_i)$ and accept iff it equals $\com$.
+% \end{itemize}
+
+% The position-binding property (no two different $m$ open at the same $i$) holds under collision resistance of $H$. We refer to App.~\ref{app:merkle} for the formal definition.
+
+
+\subsubsection{Zero-knowledge proofs}
+\label{def: NIZK}
+A {\em non-interactive zero-knowledge proof-of-knowledge system (NIZKPoK)} for an \NP-language $L$ with the corresponding relation $\relation{L}$ is represented by a tuple of algorithms $\Pi = (\setup, \prover, \verifier)$, where:
+    \begin{itemize}[itemsep=0em,nosep]
+        \item $\setup( 1^{\lambda}) \rightarrow \crs$ takes as the input a security parameter $\lambda$. It outputs a common reference string $\crs$.
+        \item $\prover(\crs, x, w) \rightarrow \pi$ takes as the input $\crs$, the statement $x$ and the witness $w$, s.t. $(x, w) \in \relation{L}$. It outputs the proof $\pi$.
+        \item $\verifier(\crs, x, \pi) \rightarrow b \in \{0,1\}$ takes as the input $\crs$, $x$ and $\pi$. It outputs 1 to accept and 0 to reject.
+    \end{itemize}
+
+Informally, a NIZK proof is secure if it satisfies \emph{completeness}, \emph{zero-knowledge}, and \emph{soundness}. Completeness requires honest verifiers always accept honest proofs. Zero-knowledge ensures proofs leak no information about the witness $w$, even to malicious verifiers. Soundness requires verifiers reject proofs of false statements.
+We refer to App.~\ref{app:zk} for the formal definition.
+
+
+\subsection{Blockchain and Proof-of-Work Consensus}
+
+A \emph{blockchain} is a decentralized, append-only ledger storing an ordered sequence of blocks; each block includes transactions, a timestamp, and the previous block's hash, yielding immutability~\cite{nakamoto2008bitcoin,bonneau2015sok}.
+
+\subsubsection{Proof-of-Work Consensus}
+
+In Proof-of-Work (PoW) consensus~\cite{nakamoto2008bitcoin}, miners compete to extend the blockchain by searching for a nonce $\mathit{ctr}$ such that $H(\mathit{ctr}, G(s, x)) < T$, where $H,G$ are cryptographic hash functions modelled as a random oracle, $s$ is the hash of the previous block, $x$ is the block content, and $T$ is a target threshold.  Because $H$ behaves as a random function, each query succeeds independently with probability $p = T/2^{\kappa}$, and the expected number of queries to produce a valid block is $1/p$.  The difficulty parameter $T$ is periodically adjusted so that blocks are produced at a target rate despite changes in the network's total hash power.
+
+Garay, Kiayias, and Leonardos~\cite{GKL20} formalise Bitcoin's security in the \emph{backbone protocol} model under the assumption that each party makes at most $q$ random-oracle queries per round and that a strict honest majority of computational power is maintained. They establish three fundamental properties of the resulting longest-chain protocol---\emph{common prefix} (sufficiently deep blocks are agreed upon by all honest parties), \emph{chain quality} (a positive fraction of blocks in any window are honest), and \emph{chain growth} (honest chains grow at a predictable rate)---which together guarantee consistency and liveness. We state these properties formally in Section~\ref{sec:problem} and carry out our security reduction in Section~\ref{sec:reduction}. We refer the reader to~\cite{GKL20} and its variable-difficulty extension~\cite{GKL17} for the full formal treatment.

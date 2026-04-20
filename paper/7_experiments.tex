@@ -1,0 +1,23 @@
+\section{Evaluation}
+\label{sec:experiments}
+Performed a simulation of the optimistic PoML protocol - 
+Implemeted a bunch of miners all executing alg. 1.
+
+
+\subsection{Block Generation Stability and Variance}
+% Several papers emphasize the need to prove that their useful-work puzzles can reliably maintain a blockchain. For instance, both Proof of Learning (PoLe) and Distributed Proof-of-Deep-Learning (D-PoDL) simulate network environments to measure the average time and the variance in block generation
+% . You should implement a simulation of your PoML lottery mechanism to demonstrate that, despite the fixed cost of machine learning inference, the subsequent hashing of the zero-knowledge proof (ZKP) produces a stable block generation rate. Comparing the variance of PoML’s block generation time to traditional Proof-of-Work (PoW) would empirically validate that your protocol prevents dominating miners from consistently winning, ensuring the necessary stochasticity for fairness
+
+%Evluate on small model, project to larger models
+
+\subsection{Wasted Work and Network Efficiency}
+% Your draft already mentions a "wasted work analysis." You can elevate this by quantitatively simulating the overlap and orphan block rates in your network, similar to the experiments conducted in the Zk-SNARK Marketplace paper
+% . By varying the number of pending user queries (mempool size) and the number of participating miners, you can empirically demonstrate the percentage of inference computations that are discarded due to the fastest-wins race, and how this scales as the network grows.
+
+
+
+\subsection{Robustness Against Proof Grinding}
+% Finally, empirical evidence showing that cheating is either detectable or economically irrational will strengthen your security claims. PoLe proved the effectiveness of their tampering prevention by showing that replacing the Secure Mapping Layer in a trained model dropped its accuracy by over 86%, making cheating easily detectable
+% . PoCL simulated adversaries executing cheaper K-Nearest Neighbors (KNN) algorithms instead of deep learning to prove that malicious actors would naturally lose the mining competition
+% . For PoML, you could simulate the "proof grinding" attack mentioned in your optimistic variant. By measuring the exact time it takes to re-run a ZKP prover with new randomness versus executing a full fresh inference, you can empirically calculate the grinding factor. Coupling this with an economic analysis—similar to the ROI and profitability calculations in the PoUW for AI paper
+% —would empirically prove your claim that the expected penalty from slashing heavily outweighs the expected gains from proof grinding.

@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: poml-sim
+Version: 0.1.0
+Summary: PoML blockchain consensus protocol simulation
+Requires-Python: >=3.10
+Requires-Dist: ezkl
+Requires-Dist: torch>=2.0
+Requires-Dist: onnx>=1.14
+Requires-Dist: pydantic>=2.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: cryptography>=41.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-timeout>=2.0; extra == "dev"

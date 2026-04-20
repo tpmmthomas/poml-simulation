@@ -1,0 +1,87 @@
+\section{Analysis of PoML}
+\label{sec:analysis}
+% Why does PoML satisfy the properties. 
+% We analyze PoML and examine whether it satisfies the required properties.
+% \begin{itemize}
+%     \item \textbf{Asymmetry.}  
+%     This property is inherent with the use of zero-knowledge proofs: each proof is hard to produce but easy to verify. 
+
+%     \item \textbf{Granularity and Parametrization.}  
+%     PoML allows tuning of a difficulty parameter to achieve a desired expected block time. When the protocol is tuned to be more difficult, the probability that 
+%     a miner succeeds in producing a valid block with only a small number of processed queries decreases. We therefore tune the difficulty of the problem by requiring 
+%     nodes to process more or fewer queries on average.
+
+%     \item \textbf{Amortization-Freeness.}  
+%     To obtain multiple valid blocks, a miner must process proportionally more queries, which must not repeat as they will otherwise be rejected. Our fixed randomness component
+%     ensures that query inputs are random between different blocks; hence, any miner will not gain an advantage when solving multiple blocks.
+    
+%     \item \textbf{Independence.}  
+%     Each query is considered solved and removed from the memory pool once it is on the blockchain, and a block will be rejected if it processes the same queries. Hence, 
+%     each block is independent and solving a previous block does not provide solutions to a later one. Each query is also guaranteed to be unique due to the different randomness used.
+
+%     \item \textbf{Unforgeability.}  
+%     As PoML binds each produced ZKP to the previous block hash, it is impossible for a miner to work on a later block before the previous one is published. Each miner
+%     must wait for the previous block to be published, or complete a valid block themselves, in order to retrieve its hash and use it to work on the next block.
+
+%     \item \textbf{Freshness.}  
+%     A computed solution cannot be reused by another miner, as the input randomness required for the model changes depending on the prover. The proof-chain that is built
+%     is also unique to each miner (different miners may create their proof-chains in different orders), which further restricts the reuse of solutions.
+
+%     \item \textbf{Progress-Freeness.}  
+%     In our protocol, each lottery is triggered when a new proof is added to a pending block, with the probability of success kept constant and independent of the number of proofs already
+%     present in the block. This guarantees progress-freeness: any already computed proofs do not give an advantage to the miner.
+
+%     \item \textbf{Public Verifiability.}  
+%     Anyone can easily verify a block by: (1) verifying all coin transactions come from some unspent transaction pool; (2) verifying each individual ZKP with the public witness; (3) verifying that $H(B) < \kappa$. All these steps can be verified easily using the chain history and without the need for a trusted party.
+% \end{itemize}
+
+\subsection{Wasted Work Analysis}
+The PoML protocol aims to reduce the `wasted work` of mining as much as possible; yet, there are still limitations in our protocol. We discuss such limitations below.
+
+
+\subsubsection{Failed mining work}
+The PoML scheme, as with traditional PoW, is essentially a fastest-wins race: nodes all work on the same pool of queries, and the fastest to produce a valid block wins.
+
+Unfortunately, it is impossible to avoid such failed attempts completely. Unless the scheme already dictates who would compute each query (which would make the blockchain lose its permissionless and decentralized properties, and also violate liveness by reducing system availability), 
+it is inevitable that some nodes' work must be discarded based on a fair, decentralized consensus mechanism. 
+
+While it is possible to adjust the lottery odds to give nodes with more existing proofs in the pending block an advantage by raising their odds, this violates progress-freeness. We therefore decide against adding such an adjustment.
+
+\subsubsection{Is the proof a form of useful work?}
+Some may argue that the proof is not a form of useful work, because the only truly valuable work is the model inference itself, and the additional verification should not be considered part of useful work. 
+However, we argue that having a proof of correct execution is inherently useful in many cloud-ML inference services, as guaranteeing the correctness of the solution in an adversarial environment is essential. Without a succinct proof, the only way to verify 
+that a node has performed the inference correctly is to rerun the full model inference, which could be costly, especially if the model is large. 
+
+With a succinct proof, any verifier can confirm the correctness of the computation with much smaller overhead, reducing the cost of rerunning the model for multiple items.
+
+%Problem: if non-zero-knowledge then the whole proof can be seen as wasted work 
+%Xero-knowledge vs non-zero-knowledge. 
+% I think non zero knowledge may be better for now
+% OUR MAIN FOCUS IS REDUCING WASTED WORKss
+
+%H(B) 
+
+%CAN WE HIDE THE MODEL? YES THE MODEL IS A GLOBAL MODEL. BUT IT MAY NOT BE OPEN SOURCE. IT CAN BE BENEFICIAL TO HIDE THE MODEL
+% OF COURSE AN OPEN SOURCE MODEL FITS OUR PROBLEM AS WELL AND IS PERFECTLY FINE.
+
+%THINGS TO DISCUSS
+% Argue why we still need to use proofs no matter what
+% Models to use
+% 1. What models to use (assuming a randomized model? MOre specific to diffusion models?)
+% 2. Zero-knowledge or non-zero-knowledge assumption - mainly solve proof grinding.
+% Zero knowledge means the model could be hidden. Output can also be hidden. 
+% 3. Any other better block generation / validation mehods? 
+% Then we may move to experiments.
+% Check a little more on reducing wasted work  section on the ZKP paper later. 
+
+%Ask also, for the properties do we need to rigorously prove, if so, how?
+\subsection{Potential Extensions}
+\myparagraph{Extending to non-randomized models}
+We can add random noise too it, not likely have effect, but not natural.
+Or sacrifice a bit of amortization resistance - fixed models can run
+
+\myparagraph{Extending to Models with variable inference cost}
+Using concept of gas costs, adjusting difficulty with the inference cost
+
+\myparagraph{Extending to each miner hosting different models}
+Model Valuation. Leave as future work.

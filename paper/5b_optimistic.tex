@@ -1,0 +1,100 @@
+\section{Optimistic Meta-Proof Variant}
+\label{sec:optimistic}
+
+The meta-proof $\pi_i^{(2)}$ in the full PoML protocol (Section~\ref{sec:protocol}) enforces that each inference proof $\pi_i^{(1)}$ is generated using predetermined randomness $\rho_i = F(\mathsf{sk}_m, r_i)$, thereby guaranteeing proof uniqueness. However, the meta-proof---which proves a statement about the SNARK prover circuit itself---is the most expensive component of block production with current ZKML technology. In this section, we introduce an \emph{optimistic} variant that replaces the cryptographic meta-proof with a Verifiable Random Function (VRF)~\cite{micali1999vrf} for randomness binding and an economic challenge-response mechanism for enforcement, yielding a hybrid Proof-of-Work (PoW)/ Proof-of-Stake (PoS) protocol that is more practical for near-term deployment.
+
+\paragraph{Key observation.}
+The meta-proof serves a single purpose: it binds the prover's internal randomness $\rho_i$ to the miner's identity and the seed~$r_i$, preventing grinding on proof randomness. A VRF provides this binding (but without verification that the prover actually used it as the proof randomness). A VRF output $\rho_i = \mathsf{VRF.Eval}(\mathsf{sk}_m, r_i)$ is (i)~uniquely determined by $(\mathsf{sk}_m, r_i)$, preventing grinding; (ii)~pseudorandom to anyone without $\mathsf{sk}_m$, preserving zero-knowledge of the SNARK; and (iii)~cheaply verifiable via a short proof~$\pi_{\mathsf{VRF},i}$  that confirms $\rho_i$ is the output relative to the miner's registered public key~$\mathsf{pk}_m$.
+
+\subsection{Protocol Differences from Section~\ref{sec:protocol}}
+\label{subsec:opt-diffs}
+
+The optimistic variant modifies the full protocol as follows:
+\begin{enumerate}[nosep]
+    \item \textbf{VRF keys.} Each miner's key pair $(\mathsf{pk}_m, \mathsf{sk}_m)$ is now a VRF key pair, i.e., $(\mathsf{pk}_m, \mathsf{sk}_m) \leftarrow \mathsf{VRF.KeyGen}(1^\kappa)$. The registration commitment $c_{\mathsf{sk}} \leftarrow \mathsf{Commit}(\mathsf{pp}, \mathsf{sk}_m)$ is retained.
+    \item \textbf{Prover randomness.} The PRF $F(\mathsf{sk}_m, r_i)$ is replaced by the VRF evaluation $(\rho_i, \pi_{\mathsf{VRF},i}) \leftarrow \mathsf{VRF.Eval}(\mathsf{sk}_m, r_i)$. Since $r_i = H(G(s,x) \parallel \mathsf{c}_{c,i} \parallel \mathsf{taskID}_i \parallel \mathsf{pk}_m \parallel i)$ already incorporates the block header, query identity, miner identity, and position index, no additional binding in the VRF input is needed. The miner retains $(\rho_i, \pi_{\mathsf{VRF},i})$ privately; they are revealed only upon challenge.
+    \item \textbf{Block structure.} Blocks no longer include $\Pi^{(2)}$. A block is $B = (s, x, \mathcal{X}, \mathcal{Y}, \Pi)$.
+    \item \textbf{Block validity.} Condition~(4) of Definition~\ref{def:valid-block} (meta-proofs verify) is removed:
+\end{enumerate}
+
+\begin{definition}[Valid Block --- Optimistic Variant]
+\label{def:valid-block-opt}
+A block $B = (s,x,\mathcal{X}, \mathcal{Y}, \Pi)$ is valid iff:
+\begin{enumerate}[nosep]
+    \item \textbf{Lottery won:} $H(G(s,x),\, \Pi) < D$;
+    \item \textbf{Non-empty proof tuples:} $|\Pi| \ge 1$;
+    \item \textbf{Inference proofs verify:} $\mathsf{Verify}(\mathsf{CRS}, \mathsf{stmt}_i^{(1)}, \pi_i^{(1)}) = 1$ for all~$i$;
+    \item \textbf{Transactions valid:} all coin transactions are valid.
+\end{enumerate}
+\end{definition}
+
+All other protocol components---query submission, query retrieval, seed derivation, inference computation, proof chain binding, output encryption and delivery, and the longest-chain consensus rule---remain identical to Section~\ref{sec:protocol}.
+
+\subsection{Staking Mechanism}
+
+Since proof uniqueness is no longer enforced on-chain at block validation time, the optimistic variant requires an economic enforcement layer, making the protocol a hybrid PoW/PoS system. Each miner must lock a stake~$S_{\mathsf{stake}}$ (denominated in the native token) in a designated smart contract before participating in block production. The stake serves as collateral against misbehaviour and must remain locked for a minimum bonding period; withdrawals are subject to an unbonding delay, preventing miners from extracting their stake immediately after misbehaving.
+
+\subsection{Challenge-Response Mechanism}
+
+Any party---not only the querying user---may challenge a specific inference proof $\pi_i^{(1)}$ in a published block, asserting that it was not produced using the canonical VRF-derived randomness $\rho_i = \mathsf{VRF.Eval}(\mathsf{sk}_m, r_i)$. The mechanism proceeds as follows:
+
+\begin{enumerate}[nosep]
+    \item \textbf{Challenge.} The challenger posts a challenge bond~$B_{\mathsf{challenge}}$ and identifies the target proof $\pi_i^{(1)}$ in a specific block. The bond deters frivolous challenges.
+
+    \item \textbf{Response.} Within $W$ blocks, the block's miner publishes the VRF output~$\rho_i$ and its proof~$\pi_{\mathsf{VRF},i}$.
+
+    \item \textbf{Verification.} Any miner can independently verify the challenged proof by performing two checks:
+    \begin{enumerate}[nosep]
+        \item $\mathsf{VRF.Verify}(\mathsf{pk}_m, r_i, \rho_i, \pi_{\mathsf{VRF},i}) = 1$:  confirms that $\rho_i$ is the unique canonical VRF output for $(\mathsf{pk}_m, r_i)$.
+        \item Reconstruct the full witness $\mathsf{wit}_i^{(1)} = (c_i, r_{c,i}, \theta, r_\theta, y_i)$ from public data and model re-execution, then check \\ $\mathsf{Prove}(\mathsf{CRS},\, \mathsf{stmt}_i^{(1)},\, \mathsf{wit}_i^{(1)}\,;\; \rho_i) = \pi_i^{(1)}$. 
+    \end{enumerate}
+    To prevent free-riding and copying, miners use a commit-reveal scheme to deliver the verdict: each commits $h_v = H(\mathsf{verdict}_v \parallel r_v)$, then reveals after the commit phase closes. A minimum quorum of~$q_{\min}$ validators must commit within an additional $V$~blocks; if the quorum is not reached, the challenge is voided and all bonds are returned.
+
+    \item \textbf{Resolution.} Under the honest majority assumption (\S\ref{sec:reduction}), a majority of responding validators are honest and will agree on the correct outcome:
+    \begin{itemize}[nosep]
+        \item \emph{Challenge fails:} a majority of validators report pass. The challenger forfeits their bond~$B_{\mathsf{challenge}}$, which is split among the majority-voting validators. The minority-voting validators's stake is slashed by a small penalty~$P_{\mathsf{validate}}$.
+        \item \emph{Challenge succeeds:} the miner fails to respond within $W$ blocks, or a majority of validators report fail. The miner's stake is slashed by a penalty~$P_{\mathsf{slash}}$, of which a fraction is awarded to the challenger, and the rest to majority-voting validators. The minority-voting validators's stake is slashed by a small penalty~$P_{\mathsf{validate}}$.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Security Analysis}
+
+We now analyse which security properties from Section~\ref{sec:reduction} are preserved and which are relaxed.
+
+\subsubsection{Cryptographically Preserved Properties}
+The following properties hold identically to the full protocol:
+\begin{itemize}[nosep]
+    \item \textbf{Inference correctness.} The SNARK soundness of $\pi_i^{(1)}$ still guarantees that each proof corresponds to a genuine inference computation $M_\theta(c_i, r_i) = y_i$.
+    \item \textbf{Sequential binding.} The chain binding $\mathsf{bind}_i = H(\pi_{i-1}^{(1)})$ remains, preventing reordering of proofs.
+    \item \textbf{Cross-block non-reuse.} The binding $\mathsf{bind}_1 = G(s,x)$ ties the proof chain to the block header, preventing proof reuse across blocks or parties.
+    \item \textbf{$q_{\mathsf{ML}}$ bound.} Producing each $\pi_i^{(1)}$ still requires full inference followed by SNARK proving, so the number of inference-proof pairs per round remains bounded by $q_{\mathsf{ML}}$.
+\end{itemize}
+
+\subsubsection{Relaxation: Proof Uniqueness}
+\label{subsec:opt-relaxation}
+
+Without the on-chain meta-proof, a miner is not forced at block validation time to use the prescribed VRF-derived randomness $\rho_i = \mathsf{VRF.Eval}(\mathsf{sk}_m, r_i)$. A miner can always re-run the SNARK prover with arbitrary randomness $\rho' \neq \rho_i$, obtaining a different proof $\tilde{\pi}_i^{(1)} \neq \pi_i^{(1)}$ and hence a different lottery hash. This constitutes \emph{proof grinding}, which leads to additional lottery chances. This grinding is, unfortunately, always possible; the optimistic variant relies entirely on the challenge mechanism and slashing to deter it.
+
+\subsubsection{Grinding Analysis}
+
+A grinding miner who has already computed the inference (witness generation) can re-run the SNARK prover with different randomness. Since witness generation accounts for only a small amount ($1$--$10\%$, validated in Sec.\ref{sec:experiments}) of total prover time in current SNARK systems, re-proving costs approximately $90$--$99\%$ of the full inference-proof cycle. Define the \emph{grinding factor} $\alpha \geq 1$ as the ratio of lottery evaluations a grinding miner obtains versus an honest miner in the same time period:
+\[
+    \alpha \;=\; \frac{1}{1 - \eta_{\mathsf{pf}}},
+\]
+where $\eta_{\mathsf{pf}} \in [0.01, 0.10]$ is the fraction of total proving time attributable to witness generation. For typical cost breakdowns, $\alpha \in [1.01, 1.11]$.
+
+The backbone reduction (Theorem~\ref{thm:main-reduction}) still applies with a tightened honest majority condition. The adversary controlling $t$ parties now obtains at most $t \cdot \alpha \cdot q_{\mathsf{ML}}$ lottery queries per round. The backbone security properties hold provided:
+\[
+    t \cdot \alpha \;\leq\; (1 - \gamma)(n - t),
+\]
+instead of $t \leq (1 - \gamma)(n-t)$. Since $\alpha$ is close to~$1$, this requires only a modest strengthening of the honest majority assumption.
+
+\subsubsection{Challenge-Based Deterrence}
+
+The challenge mechanism is the enforcement layer against proof grinding. On challenge, the VRF uniqueness property guarantees that there is exactly one valid $\rho_i$ for each $(\mathsf{sk}_m, r_i)$, and the byte-for-byte re-proving check $\mathsf{Prove}(\mathsf{CRS}, \mathsf{stmt}, \mathsf{wit}\,;\; \rho_i) = \pi_i^{(1)}$ deterministically detects any miner who used $\rho' \neq \rho_i$. 
+
+Under a rational adversary model, the expected penalty from slashing must exceed the expected gain from grinding. A miner who grinds by a factor~$\alpha$ produces $\alpha - 1$ additional lottery evaluations per honest evaluation. The expected gain per block is bounded by $(\alpha - 1) \cdot p \cdot R_{\mathsf{block}}$, where $p = D/2^\kappa$ is the per-query lottery success probability and $R_{\mathsf{block}}$ is the block reward. The expected loss from a successful challenge is $p_{\mathsf{detect}} \cdot P_{\mathsf{slash}}$, where $p_{\mathsf{detect}}$ is the detection probability (equal to~$1$ on challenge). Setting
+\[
+P_{\mathsf{slash}} \;\geq\; \frac{(\alpha - 1) \cdot p \cdot R_{\mathsf{block}}}{p_{\mathsf{challenge}}},
+\]
+where $p_{\mathsf{challenge}}$ is the probability that a given block is challenged, ensures that rational miners have no incentive to grind.

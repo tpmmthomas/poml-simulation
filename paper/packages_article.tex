@@ -1,0 +1,117 @@
+%----------b------------
+\usepackage{booktabs}
+%----------e------------
+\usepackage{enumitem}
+%----------f------------
+%\usepackage{geometry}
+%----------g------------
+%\usepackage{graphicx}
+%----------h------------
+%----------l------------
+\usepackage{latexsym}
+%----------m------------
+\usepackage{mathtools}
+\usepackage{multirow}
+\usepackage{multicol}
+\usepackage{mwe}
+\usepackage{makecell}
+%----------p------------
+\usepackage{pgfplots}
+% \usepackage[section]{placeins}
+\usepackage{pifont}
+%----------r------------
+\usepackage{ragged2e}
+\usepackage{rotating}
+%----------s------------
+\usepackage{subcaption}
+%----------t------------
+\usepackage{tabu}
+\usepackage{tabularx}
+\usepackage{threeparttable}
+\usepackage{tikz}
+%\usepackage{times}
+%----------u------------
+\usepackage[normalem]{ulem}
+\usepackage{url}
+%----------v------------
+\usepackage{verbatim}
+%----------w------------
+\usepackage{wrapfig}
+%----------x------------
+\usepackage{xcolor}
+\usepackage{xspace}
+%-----------------------
+%----------For New Style------
+%general macros
+%\usepackage[english]{babel}
+%\usepackage[utf8]{inputenc}
+%\usepackage{fullpage}
+%used for the boxes
+\usepackage[framemethod=tikz]{mdframed}
+%use for the examples
+\usepackage{algpseudocode}
+\usepackage[most]{tcolorbox}
+%\usepackage{amsfonts}
+\let\Bbbk\relax
+\usepackage{amsfonts,amsmath,amssymb,amsthm}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{svg}
+\usepackage{float}
+\usepackage[
+    n,
+    operators,
+    advantage,
+    sets,
+    adversary,
+    landau,
+    probability,
+    notions,    
+    logic,
+    ff,
+    mm,
+    primitives,
+    events,
+    complexity,
+    asymptotics,
+    keys]{cryptocode}
+\usepackage{algorithm}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+\newcommand{\redshare}{\mathit{RedShare}}
+\usepackage{breakcites}
+% \usepackage[left=1in, right=1in, top=1.5in, bottom=1.5in]{geometry}
+%\usepackage{nccmath}
+%\usepackage{bbm}
+%\usepackage[b]{esvect}
+%\usepackage{mathrsfs}
+%\captionsetup[figure]{position=below} 
+
+\expandafter\def\csname ver@etex.sty\endcsname{}
+
+
+\newtheorem{protocol}{Protocol}
+\makeatletter
+\def\th@plain{%
+  \thm@notefont{}% same as heading font
+  \itshape % body font
+}
+\def\th@definition{%
+  \thm@notefont{}% same as heading font
+  \normalfont % body font
+}
+\makeatother
+
+
+\usepackage{mdframed}
+\newmdenv[%
+  backgroundcolor=gray!10,
+  linecolor=black,
+  linewidth=1pt,
+  nobreak=true,
+  innerleftmargin=5pt,
+  innerrightmargin=10pt,
+  innertopmargin=1pt,
+  innerbottommargin=10pt,
+  font=\normalfont,
+]{theorembox}
