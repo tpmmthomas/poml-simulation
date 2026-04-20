@@ -12,7 +12,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
-from poml_sim.crypto import evaluate_lottery, hash_block, sha256
+from poml_sim.crypto import block_fingerprint, evaluate_lottery, hash_block, sha256
 from poml_sim.types import Block, BlockHeader
 
 if TYPE_CHECKING:
@@ -97,6 +97,18 @@ class Blockchain:
             for i, result in enumerate(block.results):
                 if not _verify_proof(result.proof_bytes, artifacts_dir):
                     return False, f"inference proof {i} failed verification"
+
+        # 5b. Verify proof chain binding (bind_1 = G(s,x), bind_i = H(π_{i-1}))
+        if len(block.results) > 0:
+            fingerprint = block_fingerprint(header.prev_hash, block.transactions)
+            for i, result in enumerate(block.results):
+                if result.chain_binding:  # only check if binding is set
+                    if i == 0:
+                        expected_binding = fingerprint
+                    else:
+                        expected_binding = sha256(block.results[i - 1].proof_bytes)
+                    if result.chain_binding != expected_binding:
+                        return False, f"chain binding mismatch at position {i}"
 
         # 6. Meta-proof verification: always passes (dummy)
 

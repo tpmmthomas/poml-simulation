@@ -1,4 +1,11 @@
-"""EZKL wrapper: prove() and verify() for PoML inference proofs."""
+"""EZKL wrapper: prove() and verify() for PoML inference proofs.
+
+With hashed/public visibility:
+- Inputs and outputs appear as Poseidon hashes in the public instance,
+  acting as commitments (approximating the paper's commitment openings).
+- The actual input/output values are private to the prover.
+- Model weights are fixed in the circuit (implicit commitment to θ).
+"""
 
 import asyncio
 import json

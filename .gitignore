@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# EZKL artifacts
+model/*.onnx
+model/*.json
+model/*.srs
+model/*.pk
+model/*.vk
+model/*.pf
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Pytest
+.pytest_cache/
+
+# Outputs
+*.log
