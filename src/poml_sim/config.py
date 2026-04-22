@@ -22,6 +22,11 @@ class SimConfig(BaseModel):
     input_shape: list[int] = [1, 2, 8, 8]
     seed: int = 42
 
+    # Length T of the VRF-derived noise schedule U_i = (z_{i,1}, ..., z_{i,T}).
+    # The single-pass U-Net only consumes U_i[0] as its noise channel, but
+    # all T transcript entries are produced and validated per the paper.
+    diffusion_steps: int = 1
+
     @property
     def difficulty_int(self) -> int:
         return int(self.difficulty, 16)

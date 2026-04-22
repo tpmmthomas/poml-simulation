@@ -2,7 +2,7 @@
 
 Standalone Python simulation of the Proof-of-ML-Inference (PoML) blockchain consensus protocol described in the companion paper.
 
-Multiple miner processes compete to produce blocks by running ML inference (tiny U-Net) and generating ZK proofs via EZKL. Miners pull queries from a shared mempool, run inference, generate SNARK proofs, evaluate a hash-based lottery, and broadcast winning blocks over a simulated P2P network.
+Multiple miner processes compete to produce blocks by running ML inference (tiny U-Net) and generating ZK proofs via EZKL. Miners pull queries from a shared mempool, derive per-query noise via a VRF, run inference, generate SNARK proofs, deterministically encrypt outputs, evaluate a hash-based lottery over the ciphertexts, and broadcast winning blocks over a simulated P2P network.
 
 ## Prerequisites
 
@@ -78,6 +78,10 @@ input_shape: [1, 2, 8, 8]              # Model input shape [B, C, H, W]
 
 # Reproducibility
 seed: 42                                # RNG seed for query generation
+
+# VRF noise schedule length (T in the paper). Only U_i[0] is fed to the
+# single-pass U-Net; all T VRF outputs are still proven and validated.
+diffusion_steps: 1
 ```
 
 ### Key parameters to tune
@@ -105,33 +109,37 @@ Unit tests for `crypto` and `blockchain` run without EZKL artifacts. The `zkp` a
 
 ## Differences from the Paper
 
-This simulation is a proof-of-concept and makes several simplifications compared to the full PoML protocol described in the paper (Section 4):
+This simulation targets the revised PoML protocol (VRF-derived per-step noise, ciphertext-based lottery, deterministic PKE, no meta-proof). The following simplifications remain:
 
 | Paper | Simulation | Rationale |
 |-------|-----------|-----------|
-| **Model M\_θ**: diffusion model (e.g. Stable Diffusion) with a full-scale U-Net | **Tiny U-Net** (~2-5K params, 8×8 spatial, channels 2→8→16→8→1) | EZKL circuit compilation and proving is infeasible for large models. The tiny U-Net preserves the architectural style (down-blocks, skip connections, up-blocks) while keeping proofs tractable. |
-| **Meta-proof π\_i^(2)**: ZKP for L\_det proving that deterministic randomness ρ\_i = F(sk\_m, r\_i) was used | **Dummy string** (random 64-char hex); verification always returns `True` | Meta-proofs are the most expensive component—they prove a statement *about* the SNARK prover circuit itself. Out of scope for this PoC. |
-| **Deterministic prover randomness** ρ\_i = F(sk\_m, r\_i) replacing the prover's random tape | **EZKL default randomness** | EZKL doesn't expose an API to inject custom prover randomness. The seed derivation r\_i is still computed per the paper for the noise input, but the prover's internal tape is not controlled. |
-| **Proof chain binding** bind\_i = H(π\_{i-1}^(1)) for i ≥ 2 linking proofs sequentially | **Implemented** — bind\_1 = G(s,x) (fingerprint), bind\_i = SHA-256(π\_{i-1}) for i ≥ 2. Validated in `blockchain.py`. | Faithfully follows the paper's proof chain binding scheme. |
-| **Output encryption** ct\_i = Enc(pk\_u, y\_i ‖ bind\_i ‖ taskID) | **Implemented** — X25519 key agreement + ChaCha20-Poly1305 AEAD. Each query carries the user's encryption public key; miners encrypt outputs before inclusion. | Uses modern ECIES-style encryption. The paper leaves the encryption scheme generic; this is a concrete instantiation. |
-| **ZKP statement** L\_PoML proving inference correctness, commitment opening, model commitment opening, and encryption correctness | **EZKL proof of inference + Poseidon input/output commitments** | EZKL's `hashed/public` visibility mode wraps inputs and outputs in Poseidon hash commitments inside the circuit, approximating the paper's commitment openings. Model commitment and encryption correctness remain outside the circuit. |
-| **Commitment scheme** (Setup\_com, Commit, Open) for query inputs and model weights | **SHA-256 hash** as a binding commitment | A simple hash commitment is sufficient for simulation purposes. Not hiding (inputs are public anyway in this PoC). |
-| **Digital signatures** (Ed25519 or similar) | **HMAC-SHA256** stub | Simplified to avoid external key management. Signatures are checked optimistically. |
-| **Optimistic variant** (Section 5b): VRF-based randomness binding + challenge-response protocol | **Not implemented** | Excluded from scope per user request. |
-| **Miner secret-key commitment** c\_sk ← Commit(pp, sk\_m) registered on-chain | **Not implemented** | Only relevant for meta-proof verification, which is stubbed. |
-| **Distributed network** with real P2P gossip | **Simulated network** via `multiprocessing.Queue` + `threading.Timer` delays | All processes run locally on one machine; latency is simulated. |
+| **Model M\_θ**: full DDPM with T denoising steps (reverse recurrence `x_{t-1} = f_θ(x_t, c, t) + σ_t z_t`) | **Tiny U-Net, single pass**. `diffusion_steps` (T) in the config controls the **VRF schedule length**; all T outputs are produced and validated, but only U\_i[0] is fed into the circuit as the noise channel. | A full DDPM loop inside ezkl is infeasible. The VRF side of the protocol is still exercised end-to-end for any T ≥ 1. |
+| **Unbiasable VRF** (e.g. RFC 9381 ECVRF) | **Ed25519 sign-then-hash**: `y = SHA256(Ed25519.sign(sk, x))`, `π = sig`; verify the signature and check the hash. | Ed25519's RFC 8032 signatures are deterministic per message, giving uniqueness + pseudorandomness under ROM without an extra dependency. Not formally unbiasable. |
+| **Deterministic PKE** `Enc(pk_u, y ‖ bind ‖ taskID)` with correctness + one-wayness | **Textbook RSA-2048** via `pow(m, e, n)` against `cryptography`'s RSA keys, with 245-byte chunking and a 4-byte length prefix. | Deterministic by construction, one-way under the RSA assumption; **not** IND-CPA. Not for production. |
+| **L\_PoML ZKP** proving (a) inference correctness, (b) query commitment opening, (c) model commitment opening, and (d) `ct_i = Enc(pk_u, y ‖ bind ‖ taskID)` | **EZKL proof of inference + Poseidon input/output commitments**. Hashed visibility commits to the tensor fed into the circuit, but the circuit does not check that the noise channel came from `U_i[0]` nor that the encryption was applied honestly. | Validator-side VRF verification closes (a)'s "noise came from the VRF" question at the *statement* level; it does not enforce that the circuit actually consumed the VRF noise. Full circuit-level coverage would require RSA mod-exp inside the SNARK, which is out of scope. |
+| **Per-step VRF transcript** `Π^VRF_i = ((z_{i,t}, π_{i,t}))_{t=1..T}` included in the block, verified separately from the ZKP | **Implemented** — produced by the miner per query, stored in `InferenceResult.vrf_transcript`, and verified by `blockchain.validate_block` against `BlockHeader.miner_vrf_vk`. | Matches the paper's revised block structure `B = (s, x, X, Y, Π, Π^VRF)`. |
+| **Ciphertext-based lottery** `H_i = H(G(s,x), (ct_1, ..., ct_i)) < D` | **Implemented** — `crypto.evaluate_lottery(fingerprint, ciphertexts_so_far, D)`. The validator recomputes the hash and rejects if it disagrees with `BlockHeader.lottery_hash`. | Replaces the previous proof-based lottery. |
+| **Ciphertext-based chain binding** `bind_1 = G(s,x)`, `bind_i = H(ct_{i-1})` for i ≥ 2 | **Implemented** — set by the miner before encryption and checked by the validator. | Matches the revised §4.4. |
+| **Miner VRF key distribution** with an on-chain commitment `c_vk ← Commit(vk)` | **Self-declared** in `BlockHeader.miner_vrf_vk`. No on-chain registry. | Pragmatic at sim scale; a real deployment would want a one-time commitment analogous to the paper's miner-secret-key commitment. |
+| **Meta-proof** π\_i^(2) for L\_det | **Removed**. | No longer required in the revised protocol; the VRF transcript plays the analogous role. |
+| **Digital signatures** (Ed25519 or similar) | **HMAC-SHA256** stub for identity signatures. | Kept from the prior simulation; identity keys are independent of VRF keys. |
+| **Commitment scheme** (Setup\_com, Commit, Open) for query inputs and model weights | **SHA-256 hash** as a binding commitment. | Simple and binding; not hiding. |
+| **Distributed network** with real P2P gossip | **Simulated** via `multiprocessing.Queue` + `threading.Timer` delays. | All processes run locally. |
 
 ### What IS faithfully implemented
 
-- **Block production loop** (Algorithm 1): miners retrieve queries → derive seed r\_i → run inference → generate ZKP → evaluate lottery H(G(s,x), Π\_i) < D
-- **Seed derivation**: r\_i = H(G(s,x) ‖ c\_{c,i} ‖ taskID\_i ‖ pk\_m ‖ i) exactly per the paper
-- **Block fingerprint**: G(s,x) = SHA-256(prev\_hash ‖ hash(txns))
-- **Lottery mechanism**: H\_i = H(G(s,x), Π\_i) < D with configurable difficulty
-- **Block validity** (Definition 4.6, conditions 1-2 and 5; condition 3 optionally; condition 4 stubbed)
-- **Longest-chain rule** consensus
-- **Proof-of-inference**: real EZKL SNARK proofs for the tiny U-Net
-- **Account-based coin system** with block rewards and query fees
-- **Concurrent mining** with multiple processes competing for blocks
+- **Block production loop** (Algorithm 1): retrieve queries → derive seed r\_i → evaluate VRF to produce U\_i and Π^VRF\_i → run inference → deterministically encrypt output → evaluate ciphertext lottery `H(G(s,x), (ct_1, ..., ct_i)) < D`.
+- **Seed derivation**: r\_i = H(G(s,x) ‖ c\_{c,i} ‖ taskID\_i ‖ pk\_m ‖ i).
+- **Block fingerprint**: G(s,x) = SHA-256(prev\_hash ‖ hash(txns)).
+- **Separate miner keys**: each miner holds an identity keypair (pk\_m, sk\_m) *and* an independent Ed25519 VRF keypair (vk^VRF\_m, sk^VRF\_m).
+- **Per-query VRF noise schedule**: `(z_{i,t}, π_{i,t}) ← VRF.Eval(sk^VRF, r_i ‖ t)` for t = 1..T, with all transcript entries verified by validators.
+- **Deterministic ciphertext**: same (pk\_u, y, bind, taskID) always yields the same ct\_i.
+- **Ciphertext-based chain binding and lottery**.
+- **Block validity** (Definition 4.6, revised conditions 1–5): prev-hash and height, non-empty tuples, VRF verification, chain binding, and optional ZKP verification.
+- **Longest-chain rule** consensus.
+- **Proof-of-inference**: real EZKL SNARK proofs for the tiny U-Net.
+- **Account-based coin system** with block rewards and query fees.
+- **Concurrent mining** with multiple processes competing for blocks.
 
 ## Project Structure
 
@@ -144,21 +152,26 @@ poml-sim/
 ├── src/poml_sim/
 │   ├── config.py               # Pydantic config loader
 │   ├── types.py                # Block, Query, Transaction, etc.
-│   ├── crypto.py               # Hashing, seed derivation, lottery, signing
-│   ├── blockchain.py           # Chain state + block validation
+│   ├── crypto.py               # Hashing, seed derivation, ciphertext lottery, signing
+│   ├── vrf.py                  # Ed25519 sign-then-hash VRF + noise schedule
+│   ├── encryption.py           # Deterministic textbook RSA-2048
+│   ├── blockchain.py           # Chain state + block validation (VRF + ciphertext checks)
 │   ├── accounts.py             # Account balances + transfers
 │   ├── mempool.py              # Process-safe query mempool
 │   ├── network.py              # Simulated P2P with latency
 │   ├── miner.py                # Miner worker process (Algorithm 1)
 │   ├── query_generator.py      # Generates queries at configured rate
 │   ├── zkp.py                  # EZKL prove/verify wrapper
-│   ├── coordinator.py          # Main orchestrator
+│   ├── coordinator.py          # Main orchestrator (generates identity + VRF keys)
 │   └── metrics.py              # JSON metrics output
 ├── scripts/
 │   ├── setup_model.sh          # Model export + EZKL setup
-│   └── run.py                  # Entry point
+│   └── run.py                  # Entry point (logs to logs/run_<ts>.log)
 └── tests/
     ├── test_crypto.py
+    ├── test_vrf.py
+    ├── test_encryption.py
+    ├── test_deterministic_pke.py
     ├── test_blockchain.py
     ├── test_zkp.py
     └── test_e2e.py

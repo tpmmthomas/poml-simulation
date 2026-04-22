@@ -12,8 +12,11 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+import struct
+
 from poml_sim.crypto import block_fingerprint, evaluate_lottery, hash_block, sha256
 from poml_sim.types import Block, BlockHeader
+from poml_sim.vrf import vrf_verify
 
 if TYPE_CHECKING:
     from poml_sim.accounts import AccountState
@@ -41,8 +44,9 @@ def create_genesis_block() -> Block:
 class Blockchain:
     """Manages the canonical chain state."""
 
-    def __init__(self, difficulty: int) -> None:
+    def __init__(self, difficulty: int, diffusion_steps: int = 1) -> None:
         self.difficulty = difficulty
+        self.diffusion_steps = diffusion_steps
         self.chain: list[Block] = [create_genesis_block()]
         self._block_hashes: dict[int, bytes] = {0: hash_block(self.chain[0])}
 
@@ -85,12 +89,21 @@ class Blockchain:
         if len(block.queries) != len(block.results):
             return False, f"query/result count mismatch: {len(block.queries)} vs {len(block.results)}"
 
-        # 4. Lottery hash < difficulty
-        lottery_int = int.from_bytes(header.lottery_hash, "big")
-        if lottery_int >= self.difficulty:
+        # 4. Lottery: H(G(s,x), (ct_1, ..., ct_k)) < D, and header's recorded
+        #    hash must match what we'd compute from the ciphertexts.
+        fingerprint = block_fingerprint(header.prev_hash, block.transactions)
+        ciphertexts = [r.ciphertext for r in block.results]
+        lottery_int, lottery_won = evaluate_lottery(
+            fingerprint, ciphertexts, self.difficulty
+        )
+        if not lottery_won:
             return False, f"lottery hash {lottery_int} >= difficulty {self.difficulty}"
+        if header.lottery_hash != lottery_int.to_bytes(32, "big"):
+            return False, "lottery_hash in header does not match recomputed hash"
 
-        # 5. Verify inference proofs (optional — expensive)
+        # 5. Verify inference ZKPs (optional — expensive). The circuit only
+        #    attests to the model computation; VRF and encryption are
+        #    verified separately below.
         if verify_zkp:
             from poml_sim.zkp import verify_proof as _verify_proof
 
@@ -98,21 +111,32 @@ class Blockchain:
                 if not _verify_proof(result.proof_bytes, artifacts_dir):
                     return False, f"inference proof {i} failed verification"
 
-        # 5b. Verify proof chain binding (bind_1 = G(s,x), bind_i = H(π_{i-1}))
-        if len(block.results) > 0:
-            fingerprint = block_fingerprint(header.prev_hash, block.transactions)
-            for i, result in enumerate(block.results):
-                if result.chain_binding:  # only check if binding is set
-                    if i == 0:
-                        expected_binding = fingerprint
-                    else:
-                        expected_binding = sha256(block.results[i - 1].proof_bytes)
-                    if result.chain_binding != expected_binding:
-                        return False, f"chain binding mismatch at position {i}"
+        # 5b. Chain binding: bind_1 = G(s,x), bind_i = H(ct_{i-1}) for i >= 2.
+        for i, result in enumerate(block.results):
+            if i == 0:
+                expected_binding = fingerprint
+            else:
+                expected_binding = sha256(block.results[i - 1].ciphertext)
+            if result.chain_binding != expected_binding:
+                return False, f"chain binding mismatch at position {i}"
 
-        # 6. Meta-proof verification: always passes (dummy)
+        # 5c. VRF transcript verification: every (z_{i,t}, pi^VRF_{i,t}) must
+        #     verify against the miner's declared VRF vk on input r_i || t.
+        if not header.miner_vrf_vk:
+            return False, "header missing miner_vrf_vk"
+        for i, result in enumerate(block.results):
+            if len(result.vrf_transcript) != self.diffusion_steps:
+                return (
+                    False,
+                    f"vrf transcript at position {i} has length "
+                    f"{len(result.vrf_transcript)}, expected {self.diffusion_steps}",
+                )
+            for t, (y_t, pi_t) in enumerate(result.vrf_transcript, start=1):
+                vrf_input = result.seed_used + struct.pack(">I", t)
+                if not vrf_verify(header.miner_vrf_vk, vrf_input, y_t, pi_t):
+                    return False, f"VRF proof {i},{t} failed verification"
 
-        # 7. Validate transactions
+        # 6. Validate transactions
         if account_state is not None:
             for tx in block.transactions:
                 if not account_state.validate_transaction(tx):

@@ -25,6 +25,7 @@ from poml_sim.miner import MinerProcess
 from poml_sim.network import MessageType, NetworkBus, NetworkMessage
 from poml_sim.query_generator import QueryGenerator
 from poml_sim.types import Block
+from poml_sim.vrf import generate_vrf_keypair
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,10 @@ class Coordinator:
 
     def __init__(self, config: SimConfig | None = None) -> None:
         self.config = config or load_config()
-        self.blockchain = Blockchain(self.config.difficulty_int)
+        self.blockchain = Blockchain(
+            self.config.difficulty_int,
+            diffusion_steps=self.config.diffusion_steps,
+        )
         self.account_state = AccountState()
         self.mempool = Mempool()
         self.network = NetworkBus(self.config.num_miners, self.config.network_latency_ms)
@@ -44,11 +48,16 @@ class Coordinator:
         self.coordinator_queue: multiprocessing.Queue = multiprocessing.Queue()
         self.stop_event = multiprocessing.Event()
 
-        # Generate miner keypairs
+        # Generate miner keypairs: identity + dedicated VRF key per miner
+        # (paper §PoML Protocol: each miner holds (pk_m, sk_m) and
+        # independent (vk^VRF_m, sk^VRF_m)).
         self.miner_keys: list[tuple[bytes, bytes]] = []
+        self.miner_vrf_keys: list[tuple[bytes, bytes]] = []
         for _ in range(self.config.num_miners):
             pk, sk = generate_keypair()
             self.miner_keys.append((pk, sk))
+            vrf_vk, vrf_sk = generate_vrf_keypair()
+            self.miner_vrf_keys.append((vrf_vk, vrf_sk))
             # Give each miner an initial balance for the simulation
             self.account_state.credit(pk, 100)
 
@@ -75,13 +84,17 @@ class Coordinator:
             "difficulty_int": self.config.difficulty_int,
             "max_queries_per_block": self.config.max_queries_per_block,
             "input_shape": self.config.input_shape,
+            "diffusion_steps": self.config.diffusion_steps,
         }
         for i in range(self.config.num_miners):
             pk, sk = self.miner_keys[i]
+            vrf_vk, vrf_sk = self.miner_vrf_keys[i]
             miner = MinerProcess(
                 miner_id=i,
                 miner_pk=pk,
                 miner_sk=sk,
+                miner_vrf_vk=vrf_vk,
+                miner_vrf_sk=vrf_sk,
                 mempool=self.mempool,
                 inbox=self.network.inboxes[i],
                 coordinator_queue=self.coordinator_queue,

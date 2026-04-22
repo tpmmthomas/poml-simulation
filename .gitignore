@@ -36,3 +36,4 @@ Thumbs.db
 
 # Outputs
 *.log
+*.egg-info

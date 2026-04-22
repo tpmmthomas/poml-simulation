@@ -3,10 +3,11 @@
 Implements:
 - Block fingerprint G(s,x) = SHA-256(prev_hash || hash(txns))
 - Seed derivation r_i = H(G(s,x) || commitment_i || taskID_i || pk_m || i)
-- Lottery evaluation H(G(s,x), Pi) < D
+- Lottery evaluation H(G(s,x), (ct_1, ..., ct_i)) < D
 - Block hashing for chaining
 - Ed25519 signing stubs (HMAC-based for simplicity)
-- Dummy meta-proof generation
+- Deterministic expansion of a 32-byte seed to float noise (reused by the
+  VRF module to turn each VRF output y_t into model-input noise)
 """
 
 from __future__ import annotations
@@ -66,18 +67,16 @@ def derive_seed(
 
 def evaluate_lottery(
     fingerprint: bytes,
-    proofs_so_far: list[bytes],
+    ciphertexts_so_far: list[bytes],
     difficulty: int,
 ) -> tuple[int, bool]:
-    """H_i = H(G(s,x), Pi) < D.
+    """H_i = H(G(s,x), (ct_1, ..., ct_i)) < D.
 
-    Evaluates the lottery after accumulating proofs.
-    Returns (hash_value_as_int, won: bool).
+    Paper's revised lottery: hashes the block fingerprint together with
+    the ciphertext tuple Y_i produced so far, not the ZKPs. Returns
+    (lottery_hash_as_int, won).
     """
-    proofs_concat = b"".join(
-        sha256(proof) for proof in proofs_so_far
-    )
-    lottery_hash = sha256(fingerprint, proofs_concat)
+    lottery_hash = sha256(fingerprint, *ciphertexts_so_far)
     hash_int = int.from_bytes(lottery_hash, "big")
     return hash_int, hash_int < difficulty
 
@@ -89,6 +88,7 @@ def hash_block(block: Block) -> bytes:
         struct.pack(">I", header.block_height),
         header.prev_hash,
         header.miner_pk,
+        header.miner_vrf_vk,
         struct.pack(">d", header.timestamp),
         header.difficulty.to_bytes(32, "big"),
         header.lottery_hash,
@@ -96,9 +96,13 @@ def hash_block(block: Block) -> bytes:
     # Include query commitments
     for q in block.queries:
         parts.append(q.commitment)
-    # Include proof hashes
+    # Include ciphertext, proof hash, and VRF transcript hashes per result
     for r in block.results:
+        parts.append(r.ciphertext)
         parts.append(sha256(r.proof_bytes))
+        for y_t, pi_t in r.vrf_transcript:
+            parts.append(y_t)
+            parts.append(sha256(pi_t))
     # Include transaction hashes
     for tx in block.transactions:
         parts.append(sha256(tx.sender, tx.receiver, struct.pack(">q", tx.amount)))
@@ -129,11 +133,6 @@ def verify_signature(pk: bytes, data: bytes, signature: bytes, sk: bytes | None 
         return True
     expected = hmac.new(sk, data, hashlib.sha256).digest()
     return hmac.compare_digest(expected, signature)
-
-
-def generate_dummy_meta_proof() -> str:
-    """Generate a dummy meta-proof (random 64-char hex string)."""
-    return os.urandom(32).hex()
 
 
 def seed_to_noise(seed: bytes, spatial_size: int = 64) -> list[float]:

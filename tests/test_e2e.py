@@ -17,16 +17,20 @@ def artifacts_available() -> bool:
 
 
 @pytest.mark.skipif(not artifacts_available(), reason="EZKL artifacts not set up")
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 class TestE2E:
     def test_small_simulation(self):
+        # Difficulty is set to the maximum 256-bit value so every proof wins
+        # the lottery. Real EZKL proofs take ~60s each with this circuit, so
+        # probabilistic mining is impractical for a smoke test; lottery math
+        # is covered by unit tests.
         config = SimConfig(
             model_path="model/network.onnx",
             ezkl_artifacts_dir="model/",
             num_miners=2,
             num_queries=3,
             query_rate=5.0,
-            difficulty="0x00ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            difficulty="0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             block_reward=50,
             network_latency_ms=50,
             max_queries_per_block=5,
@@ -35,18 +39,25 @@ class TestE2E:
         )
 
         coordinator = Coordinator(config)
-        coordinator.run(timeout=90.0)
+        coordinator.run(timeout=180.0)
 
         # Verify blocks were produced
         assert coordinator.blockchain.get_height() >= 1
 
         # Verify chain is valid (all blocks chained correctly)
         chain = coordinator.blockchain.chain
+        T = config.diffusion_steps
         for i in range(1, len(chain)):
             block = chain[i]
             assert block.header.block_height == i
             assert len(block.queries) > 0
             assert len(block.results) > 0
+            # Revised protocol: miners must declare a VRF vk and attach a
+            # per-query transcript of length T.
+            assert len(block.header.miner_vrf_vk) == 32
+            for result in block.results:
+                assert len(result.vrf_transcript) == T
+                assert len(result.ciphertext) > 0
 
         # Verify metrics were collected
         assert len(coordinator.metrics.blocks) >= 1

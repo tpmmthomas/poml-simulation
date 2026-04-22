@@ -17,7 +17,7 @@ class Query:
     commitment_randomness: bytes
     fee: int
     signature: bytes
-    encryption_pk: bytes = b""  # X25519 public key for output encryption
+    encryption_pk: bytes = b""  # user's RSA public key (DER) for output encryption
 
 
 @dataclass
@@ -37,10 +37,12 @@ class InferenceResult:
     query_id: int
     output: list[float]
     proof_bytes: bytes
-    meta_proof_dummy: str
     seed_used: bytes
-    chain_binding: bytes = b""  # bind_i per paper §4.4
-    encrypted_output: bytes = b""  # ct_i = Enc(pk_u, y || bind_i || taskID)
+    chain_binding: bytes = b""  # bind_i per paper §4.4 (H(ct_{i-1}) for i>=2)
+    ciphertext: bytes = b""  # ct_i = Enc(pk_u, y || bind_i || taskID)
+    # Pi^VRF_i: list of (z_t, pi_t) for t = 1..T binding the noise schedule
+    # used by this inference. Verified per-block against header.miner_vrf_vk.
+    vrf_transcript: list[tuple[bytes, bytes]] = field(default_factory=list)
 
 
 @dataclass
@@ -53,6 +55,8 @@ class BlockHeader:
     timestamp: float
     difficulty: int
     lottery_hash: bytes
+    # Miner's VRF verification key (Ed25519 raw). Self-declared per block.
+    miner_vrf_vk: bytes = b""
 
 
 @dataclass

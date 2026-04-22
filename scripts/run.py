@@ -3,6 +3,7 @@
 
 import logging
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Ensure project root is on path
@@ -14,12 +15,21 @@ from poml_sim.coordinator import Coordinator
 
 
 def main() -> None:
-    # Setup logging
+    # Route all logging to a timestamped file so the console stays clean.
+    log_dir = project_root / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        filename=str(log_path),
+        filemode="w",
     )
+
+    # One-line pointer on stderr so the user knows where output went.
+    print(f"Logging to {log_path}", file=sys.stderr)
 
     config_path = sys.argv[1] if len(sys.argv) > 1 else "config.yaml"
     config = load_config(config_path)

@@ -6,7 +6,6 @@ from poml_sim.crypto import (
     block_fingerprint,
     derive_seed,
     evaluate_lottery,
-    generate_dummy_meta_proof,
     generate_keypair,
     hash_block,
     seed_to_noise,
@@ -69,25 +68,41 @@ class TestLottery:
         """With max difficulty (2^256 - 1), lottery always passes."""
         max_diff = 2**256 - 1
         fp = b"\x00" * 32
-        proofs = [b"proof1", b"proof2"]
-        _, won = evaluate_lottery(fp, proofs, max_diff)
+        ciphertexts = [b"ct1", b"ct2"]
+        _, won = evaluate_lottery(fp, ciphertexts, max_diff)
         assert won is True
 
     def test_zero_difficulty_never_wins(self):
         """With difficulty 0, lottery never passes."""
         fp = b"\x00" * 32
-        proofs = [b"proof1"]
-        _, won = evaluate_lottery(fp, proofs, 0)
+        ciphertexts = [b"ct1"]
+        _, won = evaluate_lottery(fp, ciphertexts, 0)
         assert won is False
 
     def test_deterministic(self):
         fp = b"\xaa" * 32
-        proofs = [b"p1", b"p2"]
+        ciphertexts = [b"ct1", b"ct2"]
         diff = 2**255
-        h1, w1 = evaluate_lottery(fp, proofs, diff)
-        h2, w2 = evaluate_lottery(fp, proofs, diff)
+        h1, w1 = evaluate_lottery(fp, ciphertexts, diff)
+        h2, w2 = evaluate_lottery(fp, ciphertexts, diff)
         assert h1 == h2
         assert w1 == w2
+
+    def test_hash_matches_manual_sha256(self):
+        """Lottery hash is H(fp, ct_1, ct_2) — straight concat of inputs."""
+        fp = b"\x11" * 32
+        ct1, ct2 = b"ciphertext-one", b"ciphertext-two"
+        got, _ = evaluate_lottery(fp, [ct1, ct2], 2**256 - 1)
+        expected = int.from_bytes(sha256(fp, ct1, ct2), "big")
+        assert got == expected
+
+    def test_ciphertext_order_matters(self):
+        """Swapping the order of two ciphertexts changes the lottery hash."""
+        fp = b"\x22" * 32
+        max_diff = 2**256 - 1
+        h1, _ = evaluate_lottery(fp, [b"ct_a", b"ct_b"], max_diff)
+        h2, _ = evaluate_lottery(fp, [b"ct_b", b"ct_a"], max_diff)
+        assert h1 != h2
 
 
 class TestSeedToNoise:
@@ -129,17 +144,6 @@ class TestKeypairAndSign:
         assert verify_signature(pk2, b"data", sig, sk2) is False
 
 
-class TestMetaProof:
-    def test_length(self):
-        mp = generate_dummy_meta_proof()
-        assert len(mp) == 64
-
-    def test_unique(self):
-        mp1 = generate_dummy_meta_proof()
-        mp2 = generate_dummy_meta_proof()
-        assert mp1 != mp2
-
-
 class TestHashBlock:
     def test_deterministic(self):
         header = BlockHeader(
@@ -149,9 +153,23 @@ class TestHashBlock:
             timestamp=1000.0,
             difficulty=100,
             lottery_hash=b"\xbb" * 32,
+            miner_vrf_vk=b"\xdd" * 32,
         )
         block = Block(header=header)
         h1 = hash_block(block)
         h2 = hash_block(block)
         assert h1 == h2
         assert len(h1) == 32
+
+    def test_vrf_vk_affects_hash(self):
+        base = dict(
+            block_height=1,
+            prev_hash=b"\x00" * 32,
+            miner_pk=b"\xaa" * 32,
+            timestamp=1000.0,
+            difficulty=100,
+            lottery_hash=b"\xbb" * 32,
+        )
+        b1 = Block(header=BlockHeader(**base, miner_vrf_vk=b"\xdd" * 32))
+        b2 = Block(header=BlockHeader(**base, miner_vrf_vk=b"\xee" * 32))
+        assert hash_block(b1) != hash_block(b2)
