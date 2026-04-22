@@ -49,6 +49,10 @@ class Blockchain:
         self.diffusion_steps = diffusion_steps
         self.chain: list[Block] = [create_genesis_block()]
         self._block_hashes: dict[int, bytes] = {0: hash_block(self.chain[0])}
+        # Set of query_ids already included somewhere in the chain. Mempool
+        # is peek-style, so two miners may legitimately race and both submit
+        # blocks containing the same query — the second one must be rejected.
+        self._included_query_ids: set[int] = set()
 
     def get_tip(self) -> Block:
         return self.chain[-1]
@@ -88,6 +92,16 @@ class Blockchain:
 
         if len(block.queries) != len(block.results):
             return False, f"query/result count mismatch: {len(block.queries)} vs {len(block.results)}"
+
+        # 3b. Reject blocks containing queries already in the chain. Without
+        # this check, two miners racing on overlapping batches could both win
+        # at adjacent heights and the same query_id would land in the chain
+        # twice. (Mempool fetch is peek-style — overlap is by design.)
+        duplicates = [
+            q.query_id for q in block.queries if q.query_id in self._included_query_ids
+        ]
+        if duplicates:
+            return False, f"queries already in chain: {duplicates}"
 
         # 4. Lottery: H(G(s,x), (ct_1, ..., ct_k)) < D, and header's recorded
         #    hash must match what we'd compute from the ciphertexts.
@@ -159,6 +173,8 @@ class Blockchain:
 
         self.chain.append(block)
         self._block_hashes[block.header.block_height] = hash_block(block)
+        for q in block.queries:
+            self._included_query_ids.add(q.query_id)
         logger.info(
             "Block %d added (miner=%s, queries=%d)",
             block.header.block_height,

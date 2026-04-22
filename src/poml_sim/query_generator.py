@@ -30,17 +30,24 @@ class QueryGenerator:
         self,
         mempool: Mempool,
         num_queries: int,
-        query_rate: float,
+        initial_burst: int,
+        steady_interval_s: float,
         spatial_size: int = 64,
         seed: int = 42,
     ) -> None:
         self.mempool = mempool
         self.num_queries = num_queries
-        self.query_rate = query_rate
+        # Two-phase pacing: emit `initial_burst` queries at t=0, then drip one
+        # every `steady_interval_s` seconds until the `num_queries` cap is hit.
+        self.initial_burst = initial_burst
+        self.steady_interval_s = steady_interval_s
         self.spatial_size = spatial_size
         self.rng = random.Random(seed)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Set once _run() returns. Lets the coordinator distinguish "mempool
+        # is momentarily empty between drips" from "no more queries coming."
+        self._done = threading.Event()
 
         # Create a few simulated users
         # (signing_pk, signing_sk, task_counter, encryption_pk, encryption_sk)
@@ -60,22 +67,47 @@ class QueryGenerator:
             self._thread.join(timeout=5.0)
 
     def _run(self) -> None:
-        interval = 1.0 / self.query_rate if self.query_rate > 0 else 0.5
         generated = 0
+        burst_cap = min(self.initial_burst, self.num_queries)
 
-        for query_id in range(self.num_queries):
+        # Phase 1: initial burst, no inter-query delay.
+        for query_id in range(burst_cap):
+            if self._stop.is_set():
+                break
+            query = self._make_query(query_id)
+            self.mempool.add_query(query)
+            generated += 1
+            logger.info(
+                "Query %d generated (burst, user=%s)",
+                query_id,
+                query.user_pk.hex()[:12],
+            )
+
+        # Phase 2: steady drip. Sleep in small slices so stop() is responsive.
+        for query_id in range(burst_cap, self.num_queries):
+            slept = 0.0
+            while slept < self.steady_interval_s and not self._stop.is_set():
+                chunk = min(0.5, self.steady_interval_s - slept)
+                time.sleep(chunk)
+                slept += chunk
             if self._stop.is_set():
                 break
 
             query = self._make_query(query_id)
             self.mempool.add_query(query)
             generated += 1
-            logger.info("Query %d generated (user=%s)", query_id, query.user_pk.hex()[:12])
-
-            if generated < self.num_queries:
-                time.sleep(interval)
+            logger.info(
+                "Query %d generated (steady, user=%s)",
+                query_id,
+                query.user_pk.hex()[:12],
+            )
 
         logger.info("Query generator finished: %d queries produced", generated)
+        self._done.set()
+
+    @property
+    def is_done(self) -> bool:
+        return self._done.is_set()
 
     def _make_query(self, query_id: int) -> Query:
         # Pick a random user

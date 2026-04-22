@@ -1,0 +1,39 @@
+{
+  "blocks": [
+    {
+      "height": 1,
+      "miner_id": 0,
+      "miner_pk": "e7a0d550bdda272285688126",
+      "timestamp": 1776898952.210639,
+      "num_queries": 1,
+      "num_transactions": 0,
+      "lottery_hash": "b692c2b892c399bd1e9fe7fc",
+      "time_since_last_block": 0.0,
+      "lottery_attempts": 1
+    },
+    {
+      "height": 2,
+      "miner_id": 1,
+      "miner_pk": "5267d367307a1e90550805f3",
+      "timestamp": 1776899062.7441158,
+      "num_queries": 1,
+      "num_transactions": 0,
+      "lottery_hash": "c39a5b0f622bfbf1ffba0c62",
+      "time_since_last_block": 110.5335,
+      "lottery_attempts": 1
+    }
+  ],
+  "aggregate": {
+    "total_blocks": 2,
+    "total_proofs_generated": 2,
+    "avg_block_time": 110.53347682952881,
+    "min_block_time": 110.53347682952881,
+    "max_block_time": 110.53347682952881,
+    "avg_queries_per_block": 1.0,
+    "miner_win_distribution": {
+      "0": 1,
+      "1": 1
+    },
+    "simulation_duration": 225.40359497070312
+  }
+}

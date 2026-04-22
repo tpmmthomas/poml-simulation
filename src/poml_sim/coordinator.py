@@ -40,7 +40,10 @@ class Coordinator:
             diffusion_steps=self.config.diffusion_steps,
         )
         self.account_state = AccountState()
-        self.mempool = Mempool()
+        # Manager owns the shared list backing the Mempool. Held on self so it
+        # outlives method scope and gets shut down explicitly in _shutdown().
+        self._manager = multiprocessing.Manager()
+        self.mempool = Mempool.create(self._manager)
         self.network = NetworkBus(self.config.num_miners, self.config.network_latency_ms)
         self.metrics = SimulationMetrics()
 
@@ -78,6 +81,17 @@ class Coordinator:
 
         self.metrics.start_time = time.time()
 
+        # Resolve per-miner fetch strategies. Cycle the configured list to
+        # cover all miners — empty list falls back to SEQUENTIAL for everyone.
+        from poml_sim.mempool import FetchStrategy
+
+        strategy_names = self.config.fetch_strategies or ["sequential"]
+        per_miner_strategies = [
+            FetchStrategy.parse(strategy_names[i % len(strategy_names)]).value
+            for i in range(self.config.num_miners)
+        ]
+        logger.info("Miner fetch strategies: %s", per_miner_strategies)
+
         # Spawn miners
         config_dict = {
             "ezkl_artifacts_dir": self.config.ezkl_artifacts_dir,
@@ -89,6 +103,7 @@ class Coordinator:
         for i in range(self.config.num_miners):
             pk, sk = self.miner_keys[i]
             vrf_vk, vrf_sk = self.miner_vrf_keys[i]
+            miner_config = {**config_dict, "fetch_strategy": per_miner_strategies[i]}
             miner = MinerProcess(
                 miner_id=i,
                 miner_pk=pk,
@@ -99,7 +114,7 @@ class Coordinator:
                 inbox=self.network.inboxes[i],
                 coordinator_queue=self.coordinator_queue,
                 stop_event=self.stop_event,
-                config=config_dict,
+                config=miner_config,
             )
             self.miners.append(miner)
 
@@ -108,7 +123,8 @@ class Coordinator:
         self.query_generator = QueryGenerator(
             mempool=self.mempool,
             num_queries=self.config.num_queries,
-            query_rate=self.config.query_rate,
+            initial_burst=self.config.initial_burst,
+            steady_interval_s=self.config.steady_interval_s,
             spatial_size=spatial,
             seed=self.config.seed,
         )
@@ -158,6 +174,13 @@ class Coordinator:
                             lottery_attempts=len(block.results),
                         )
 
+                        # Drop confirmed queries from the mempool BEFORE the
+                        # broadcast so any miner who reacts to the new-block
+                        # message sees the updated mempool on its next fetch.
+                        removed = self.mempool.remove_queries(
+                            [q.query_id for q in block.queries]
+                        )
+
                         # Broadcast to all miners
                         net_msg = NetworkMessage(
                             msg_type=MessageType.NEW_BLOCK,
@@ -171,22 +194,34 @@ class Coordinator:
 
                         blocks_produced += 1
                         logger.info(
-                            ">>> Block %d confirmed (miner %d, %d queries, chain height %d)",
+                            ">>> Block %d confirmed (miner %d, %d queries, chain height %d, %d removed from mempool)",
                             block.header.block_height,
                             miner_id,
                             len(block.queries),
                             self.blockchain.get_height(),
+                            removed,
                         )
                     else:
+                        # Mempool fetch is peek-only, so a rejected block does
+                        # NOT need its queries re-emitted — they were never
+                        # removed in the first place. Other miners (or the
+                        # same one on its next round) will pick them up
+                        # naturally from the still-populated mempool.
                         logger.warning(
                             "Block from miner %d rejected: %s",
                             miner_id,
                             reason,
                         )
 
-                # Check termination: all queries processed and a reasonable number of blocks
-                if blocks_produced > 0 and self.mempool.size == 0:
-                    # Wait a bit for any in-flight blocks
+                # Early termination: only stop once the generator has produced
+                # its full quota AND the mempool has drained. Without the
+                # is_done check, the drip-paced generator would leave the
+                # mempool transiently empty between queries and trigger
+                # shutdown after the first block.
+                generator_done = (
+                    self.query_generator is not None and self.query_generator.is_done
+                )
+                if blocks_produced > 0 and generator_done and self.mempool.size == 0:
                     time.sleep(2.0)
                     if self.mempool.size == 0:
                         logger.info("All queries processed, shutting down")
@@ -214,6 +249,12 @@ class Coordinator:
             if miner.is_alive():
                 logger.warning("Miner %d did not stop gracefully, terminating", miner.miner_id)
                 miner.terminate()
+
+        # Tear down the Manager process backing the shared mempool.
+        try:
+            self._manager.shutdown()
+        except Exception:
+            pass
 
     def _report(self) -> None:
         """Print summary and dump metrics."""

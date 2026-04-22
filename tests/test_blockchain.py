@@ -66,7 +66,11 @@ def _make_valid_block(
     T = chain.diffusion_steps
     fingerprint = block_fingerprint(tip_hash, [])
 
-    queries = [_make_query(i) for i in range(num_results)]
+    # Namespace query_ids by the chain height at which this block will sit,
+    # so repeated calls to this helper (chains with >1 block) don't collide
+    # with each other and trip the blockchain's cross-block dedup rule.
+    qid_base = (chain.get_height() + 1) * 1_000_000
+    queries = [_make_query(qid_base + i) for i in range(num_results)]
 
     # Brute-force a list of ciphertexts whose cumulative hash wins the
     # lottery. With max difficulty this hits on the first try.
