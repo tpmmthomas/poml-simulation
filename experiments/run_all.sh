@@ -26,6 +26,13 @@ NUM_MINERS=4
 BLOCKS_EXP1=50
 BLOCKS_EXP2=10
 BENCH_SECONDS=5
+# Per-process virtual-memory cap (GB). Applied via ulimit -v before launching
+# python so every miner and proof-worker subprocess inherits the same cap.
+# Current observation: each miner uses ~15 GB RSS / ~16 GB VSZ during an ezkl
+# proof, so 24 GB gives ~50% headroom and keeps miner × 8 under 200 GB VSZ
+# aggregate — well below 125 GB RAM + 127 GB swap on this box.
+# Set 0 to disable the cap entirely.
+MEM_LIMIT_GB=0
 SKIP_CAL=false
 SKIP_EXP1=false
 SKIP_EXP2=false
@@ -41,6 +48,9 @@ Options:
   --blocks-exp1 N         Blocks for Exp 1 each mechanism (default: 50)
   --blocks-exp2 N         Blocks per config for Exp 2 (default: 10)
   --bench-seconds S       Length of the PoW hashrate benchmark (default: 5)
+  --memory-limit-gb N     Per-process virtual-memory cap in GB (default: 24;
+                          0 disables; applies to every python process and
+                          inherited miner / proof-worker subprocess)
   --skip-calibration      Reuse existing results/pow_calibration.json
   --skip-exp1             Do not run Experiment 1
   --skip-exp2             Do not run Experiment 2
@@ -56,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --blocks-exp1)      BLOCKS_EXP1="$2"; shift 2 ;;
     --blocks-exp2)      BLOCKS_EXP2="$2"; shift 2 ;;
     --bench-seconds)    BENCH_SECONDS="$2"; shift 2 ;;
+    --memory-limit-gb)  MEM_LIMIT_GB="$2"; shift 2 ;;
     --skip-calibration) SKIP_CAL=true; shift ;;
     --skip-exp1)        SKIP_EXP1=true; shift ;;
     --skip-exp2)        SKIP_EXP2=true; shift ;;
@@ -76,6 +87,24 @@ fi
 PY="$(command -v python)"
 echo "[run_all] python: ${PY}"
 
+# ---- apply per-process memory cap ----
+# ulimit -v sets RLIMIT_AS (virtual memory). Inherited by all children, so
+# every python invocation below — plus each miner subprocess and each ezkl
+# proof-worker grandchild — is independently capped at this value.
+if [[ "${MEM_LIMIT_GB}" != "0" ]]; then
+  # ulimit -v takes kibibytes
+  MEM_KB=$(( MEM_LIMIT_GB * 1024 * 1024 ))
+  ulimit -v "${MEM_KB}"
+  APPLIED_V="$(ulimit -v)"
+  if [[ "${APPLIED_V}" == "${MEM_KB}" ]]; then
+    echo "[run_all] memory cap:    ${MEM_LIMIT_GB} GiB per process (ulimit -v ${MEM_KB} KiB applied)"
+  else
+    echo "[run_all] WARNING: ulimit -v request ${MEM_KB} KiB != reported ${APPLIED_V} KiB"
+  fi
+else
+  echo "[run_all] memory cap:    DISABLED (--memory-limit-gb 0)"
+fi
+
 # ---- sanity: required reference log exists ----
 REF_LOG="${PROJECT_ROOT}/logs/run_20260423_050539.log"
 if [[ ! -f "${REF_LOG}" ]]; then
@@ -94,6 +123,7 @@ echo "[run_all] target seconds: ${TARGET_SECONDS}"
 echo "[run_all] miners:         ${NUM_MINERS}"
 echo "[run_all] exp1 blocks:    ${BLOCKS_EXP1}"
 echo "[run_all] exp2 blocks:    ${BLOCKS_EXP2}"
+echo "[run_all] mem/process:    ${MEM_LIMIT_GB} GiB (ulimit -v)"
 echo "[run_all] master log:     ${MASTER_LOG}"
 echo "[run_all]"
 echo "[run_all] Progress is streamed to stdout (block/proof events)."

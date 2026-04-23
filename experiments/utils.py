@@ -233,12 +233,20 @@ def apply_cpu_limit(cpu_limit: int | None, num_miners: int) -> None:
                 "RAYON/OMP/MKL_NUM_THREADS", per_miner)
 
 
-def run_poml(overrides: dict, log_path: Path, timeout: float) -> PomlRunResult:
+def run_poml(
+    overrides: dict,
+    log_path: Path,
+    timeout: float,
+    stop_after_blocks: int | None = None,
+) -> PomlRunResult:
     """Drive a single PoML simulation with the given config overrides.
 
     Starts from `SimConfig` defaults, applies `overrides`, routes all logging
     to `log_path`, pins CPUs, and runs the `Coordinator` for up to `timeout`
-    seconds (it stops earlier when all queries drain, per Coordinator logic).
+    seconds. If `stop_after_blocks` is set, a watcher thread sets the
+    coordinator's stop_event as soon as the chain reaches that height — lets
+    us pre-fill the mempool with more queries than we plan to confirm (which
+    avoids the deterministic-lottery stall when only 1-2 queries remain).
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -251,10 +259,31 @@ def run_poml(overrides: dict, log_path: Path, timeout: float) -> PomlRunResult:
     handlers = _install_run_log_handler(log_path)
     apply_cpu_limit(config.cpu_limit, config.num_miners)
 
+    import threading
+    import time as _time
+
+    coordinator = Coordinator(config)
+    watcher: threading.Thread | None = None
+    if stop_after_blocks is not None:
+        def _watch() -> None:
+            while not coordinator.stop_event.is_set():
+                if coordinator.blockchain.get_height() >= stop_after_blocks:
+                    logger.info(
+                        "run_poml: reached %d blocks, signalling stop_event",
+                        stop_after_blocks,
+                    )
+                    coordinator.stop_event.set()
+                    return
+                _time.sleep(0.5)
+        watcher = threading.Thread(target=_watch, daemon=True, name="block-count-watcher")
+        watcher.start()
+
     try:
-        coordinator = Coordinator(config)
         coordinator.run(timeout=timeout)
     finally:
+        if watcher is not None:
+            coordinator.stop_event.set()
+            watcher.join(timeout=5.0)
         # Detach handlers so follow-up runs don't duplicate log lines.
         root = logging.getLogger()
         for h in handlers:

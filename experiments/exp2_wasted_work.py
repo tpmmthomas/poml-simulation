@@ -82,12 +82,16 @@ def run_one(
     """Drive a single PoML run and return a row suitable for CSV output."""
     log = _console_logger()
 
+    # Keep protocol defaults (max_queries_per_block=10 and the default mix of
+    # fetch strategies). Early-exit is driven by `stop_after_blocks`, so we
+    # pre-fill the mempool generously rather than sizing it to drain.
+    max_qpb = 10000
     overrides = {
         "num_miners": num_miners,
-        "num_queries": num_blocks,
-        "initial_burst": num_blocks,
-        "steady_interval_s": 1.0,
-        "max_queries_per_block": 1,
+        "num_queries": 10000,
+        "initial_burst": 50,
+        "steady_interval_s": 30.0,
+        "max_queries_per_block": max_qpb,
         "difficulty": difficulty,
         # 3x the expected wall time as a safety ceiling so the driver doesn't
         # hang forever if difficulty is mis-calibrated.
@@ -98,7 +102,12 @@ def run_one(
     log_path = LOGS_DIR / f"exp2_{label}_{stamp}.log"
     log.info("[%s] miners=%d diff=%s... blocks=%d", label, num_miners, difficulty[:20], num_blocks)
 
-    result = run_poml(overrides, log_path, timeout=overrides["simulation_timeout"])
+    result = run_poml(
+        overrides,
+        log_path,
+        timeout=overrides["simulation_timeout"],
+        stop_after_blocks=num_blocks,
+    )
 
     stats = summarize(result.block_times)
     log.info(

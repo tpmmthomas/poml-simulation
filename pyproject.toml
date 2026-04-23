@@ -14,6 +14,17 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "cryptography>=41.0",
+    # Stable Diffusion appendix experiments
+    # (experiments/exp3_sd_activation_divergence.py,
+    #  experiments/exp4_sd_inference_timing.py)
+    "diffusers",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "numpy",
+    "matplotlib",
+    "tqdm",
+    "Pillow",
 ]
 
 [project.optional-dependencies]

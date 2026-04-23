@@ -29,7 +29,7 @@ difficulty: "0x3fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
 block_reward: 50
 network_latency_ms: 100
-max_queries_per_block: 10
+max_queries_per_block: 10000
 
 input_shape: [1, 2, 8, 8]
 seed: 42

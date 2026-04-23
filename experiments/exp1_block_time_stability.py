@@ -76,15 +76,23 @@ def run_poml_phase(num_blocks: int, target_seconds: float, smoke: bool) -> dict:
         )
         log.info("PoML derived difficulty: %s", difficulty)
 
-    # One block per query (max_queries_per_block=1, num_queries=num_blocks) so the
-    # coordinator terminates cleanly after exactly `num_blocks` confirmations.
-    # Generous simulation_timeout: 3x the expected wall time as a safety ceiling.
+    # We want exactly `num_blocks` confirmations. Keep the protocol defaults
+    # (fetch_strategies=[sequential,high_fee,random]) and let each block round
+    # append ct_i cumulatively into Y_i — this is the paper's Algorithm 1
+    # "Until H_i < D" loop, so we set max_queries_per_block very high so a
+    # miner never restarts a round before winning.
+    #
+    # Pool size is decoupled from max_qpb: at p≈0.178, the 99th-percentile
+    # upper bound on proofs-per-block is 24, so 25 × num_blocks queries is
+    # plenty. num_blocks × max_qpb would be 500k queries for the full run —
+    # that's ~8 min of query-generator warmup with no benefit.
+    max_qpb = 10000
     overrides = {
         "num_miners": 4,
-        "num_queries": num_blocks,
-        "initial_burst": num_blocks,  # drop all into mempool at t=0
-        "steady_interval_s": 1.0,     # irrelevant once the burst lands
-        "max_queries_per_block": 1,
+        "num_queries": 10000,
+        "initial_burst": 50,  # drop all into mempool at t=0
+        "steady_interval_s": 30.0,    # irrelevant once the burst lands
+        "max_queries_per_block": max_qpb,
         "difficulty": difficulty,
         "simulation_timeout": (num_blocks * target_seconds * 3) if not smoke else 600.0,
     }
@@ -93,7 +101,12 @@ def run_poml_phase(num_blocks: int, target_seconds: float, smoke: bool) -> dict:
     log_path = LOGS_DIR / f"exp1_poml_{stamp}.log"
     log.info("Running PoML (logs -> %s)...", log_path)
 
-    result = run_poml(overrides, log_path, timeout=overrides["simulation_timeout"])
+    result = run_poml(
+        overrides,
+        log_path,
+        timeout=overrides["simulation_timeout"],
+        stop_after_blocks=num_blocks,
+    )
 
     log.info(
         "PoML done: blocks=%d, completed_proofs=%d, included_proofs=%d, wasted=%d (%.1f%%)",

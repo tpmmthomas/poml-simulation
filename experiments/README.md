@@ -1,9 +1,13 @@
 # PoML Experiments
 
-Drivers for two empirical experiments on the PoML simulator, plus a simplified
-Bitcoin-style PoW baseline.
+Drivers for the PoML simulator experiments (PoML vs. simplified PoW baseline)
+and the Stable Diffusion appendix experiments that empirically validate the
+Computational Independence of Activations (CIA) property underpinning the
+PoML lottery.
 
 ## Files
+
+### Main experiments (simulator)
 
 | Path | What it does |
 | --- | --- |
@@ -13,6 +17,18 @@ Bitcoin-style PoW baseline.
 | [exp1_block_time_stability.py](exp1_block_time_stability.py) | 50-block PoML and PoW runs at 300 s target; emits mean/min/max/stdev/variance |
 | [exp2_wasted_work.py](exp2_wasted_work.py) | PoML sweeps over expected block time (200/300/400 s) and miner count (2/4/8), 10 blocks each |
 | `results/` | CSVs and per-run logs (gitignored) |
+
+### Appendix experiments (Stable Diffusion empirical validation)
+
+| Path | What it does |
+| --- | --- |
+| [sd/hooks.py](sd/hooks.py) | `ActivationRecorder` — forward-hook helper for capturing intermediate UNet activations |
+| [sd/utils.py](sd/utils.py) | Seeding, device selection, cosine/L2/L_inf/relative-error metrics, `MODELS_DIR` path |
+| [exp3_sd_activation_divergence.py](exp3_sd_activation_divergence.py) | SD v1.4 — activation divergence under latent / prompt perturbation; produces `results/sd_activation_divergence.json` and `results/figures/sd_*.pdf` |
+| [exp4_sd_inference_timing.py](exp4_sd_inference_timing.py) | SD v1.4 — 1 000 wall-clock inference passes with random prompts/seeds; produces `results/sd_inference_timing.json` |
+
+SD weights are expected at `models/stable-diffusion/stable-diffusion-v1-4-fp16/`.
+Run `python scripts/download_sd_model.py` once to fetch them.
 
 ## How PoML difficulty is calibrated
 
@@ -58,6 +74,19 @@ python experiments/exp1_block_time_stability.py --blocks 50 --target 300
 
 # 3. Experiment 2: block-time sweep + miner-count sweep, 10 blocks each (~5 h)
 python experiments/exp2_wasted_work.py --blocks 10
+```
+
+### Appendix SD experiments
+
+```bash
+# One-off: fetch SD v1.4 weights into models/stable-diffusion/
+python scripts/download_sd_model.py
+
+# Exp 3: activation divergence (writes results + figures)
+python experiments/exp3_sd_activation_divergence.py
+
+# Exp 4: wall-clock inference timing
+python experiments/exp4_sd_inference_timing.py
 ```
 
 ### Outputs
