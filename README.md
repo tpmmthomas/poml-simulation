@@ -95,6 +95,12 @@ diffusion_steps: 1
 | `max_queries_per_block` | Caps how many proofs a miner attempts per block. Higher values give more lottery attempts per block. |
 | `network_latency_ms` | Simulates propagation delay. Higher values increase the chance of stale/orphan blocks. |
 
+## Experiments
+
+See [docs/experiments.md](docs/experiments.md) for a step-by-step guide to
+running all experiments (PoML vs. PoW simulator, Stable Diffusion CIA
+validation) and interpreting their outputs.
+
 ## Tests
 
 ```bash
@@ -109,32 +115,31 @@ Unit tests for `crypto` and `blockchain` run without EZKL artifacts. The `zkp` a
 
 ## Differences from the Paper
 
-This simulation targets the revised PoML protocol (VRF-derived per-step noise, ciphertext-based lottery, deterministic PKE, no meta-proof). The following simplifications remain:
+This simulation targets the revised PoML protocol (VRF-derived per-step noise, ciphertext-based lottery, randomized PKE via encryption VRF, no meta-proof). The following simplifications remain:
 
-| Paper | Simulation | Rationale |
-|-------|-----------|-----------|
-| **Model M\_θ**: full DDPM with T denoising steps (reverse recurrence `x_{t-1} = f_θ(x_t, c, t) + σ_t z_t`) | **Tiny U-Net, single pass**. `diffusion_steps` (T) in the config controls the **VRF schedule length**; all T outputs are produced and validated, but only U\_i[0] is fed into the circuit as the noise channel. | A full DDPM loop inside ezkl is infeasible. The VRF side of the protocol is still exercised end-to-end for any T ≥ 1. |
-| **Unbiasable VRF** (e.g. RFC 9381 ECVRF) | **Ed25519 sign-then-hash**: `y = SHA256(Ed25519.sign(sk, x))`, `π = sig`; verify the signature and check the hash. | Ed25519's RFC 8032 signatures are deterministic per message, giving uniqueness + pseudorandomness under ROM without an extra dependency. Not formally unbiasable. |
-| **Deterministic PKE** `Enc(pk_u, y ‖ bind ‖ taskID)` with correctness + one-wayness | **Textbook RSA-2048** via `pow(m, e, n)` against `cryptography`'s RSA keys, with 245-byte chunking and a 4-byte length prefix. | Deterministic by construction, one-way under the RSA assumption; **not** IND-CPA. Not for production. |
-| **L\_PoML ZKP** proving (a) inference correctness, (b) query commitment opening, (c) model commitment opening, and (d) `ct_i = Enc(pk_u, y ‖ bind ‖ taskID)` | **EZKL proof of inference + Poseidon input/output commitments**. Hashed visibility commits to the tensor fed into the circuit, but the circuit does not check that the noise channel came from `U_i[0]` nor that the encryption was applied honestly. | Validator-side VRF verification closes (a)'s "noise came from the VRF" question at the *statement* level; it does not enforce that the circuit actually consumed the VRF noise. Full circuit-level coverage would require RSA mod-exp inside the SNARK, which is out of scope. |
-| **Per-step VRF transcript** `Π^VRF_i = ((z_{i,t}, π_{i,t}))_{t=1..T}` included in the block, verified separately from the ZKP | **Implemented** — produced by the miner per query, stored in `InferenceResult.vrf_transcript`, and verified by `blockchain.validate_block` against `BlockHeader.miner_vrf_vk`. | Matches the paper's revised block structure `B = (s, x, X, Y, Π, Π^VRF)`. |
-| **Ciphertext-based lottery** `H_i = H(G(s,x), (ct_1, ..., ct_i)) < D` | **Implemented** — `crypto.evaluate_lottery(fingerprint, ciphertexts_so_far, D)`. The validator recomputes the hash and rejects if it disagrees with `BlockHeader.lottery_hash`. | Replaces the previous proof-based lottery. |
-| **Ciphertext-based chain binding** `bind_1 = G(s,x)`, `bind_i = H(ct_{i-1})` for i ≥ 2 | **Implemented** — set by the miner before encryption and checked by the validator. | Matches the revised §4.4. |
-| **Miner VRF key distribution** with an on-chain commitment `c_vk ← Commit(vk)` | **Self-declared** in `BlockHeader.miner_vrf_vk`. No on-chain registry. | Pragmatic at sim scale; a real deployment would want a one-time commitment analogous to the paper's miner-secret-key commitment. |
-| **Meta-proof** π\_i^(2) for L\_det | **Removed**. | No longer required in the revised protocol; the VRF transcript plays the analogous role. |
-| **Digital signatures** (Ed25519 or similar) | **HMAC-SHA256** stub for identity signatures. | Kept from the prior simulation; identity keys are independent of VRF keys. |
-| **Commitment scheme** (Setup\_com, Commit, Open) for query inputs and model weights | **SHA-256 hash** as a binding commitment. | Simple and binding; not hiding. |
-| **Distributed network** with real P2P gossip | **Simulated** via `multiprocessing.Queue` + `threading.Timer` delays. | All processes run locally. |
+| Paper | Simulation |
+|-------|-----------|
+| **Model M\_θ**: full DDPM with T denoising steps (reverse recurrence `x_{t-1} = f_θ(x_t, c, t) + σ_t z_t`) | **Tiny U-Net, single pass**. `diffusion_steps` (T) in the config controls the **VRF schedule length**; all T outputs are produced and validated, but only U\_i[0] is fed into the circuit as the noise channel. |
+| **Unbiasable VRF** (e.g. RFC 9381 ECVRF) | **Ed25519 sign-then-hash**: `y = SHA256(Ed25519.sign(sk, x))`, `π = sig`; verify the signature and check the hash. |
+| **Randomized PKE** `Enc(pk_u, y ‖ taskID; r_enc)` with IND-CPA security; encryption randomness `r_enc` derived via a dedicated encryption VRF `(vk^VRF_enc, sk^VRF_enc)`. | **Textbook RSA-2048** via `pow(m, e, n)` (deterministic); no encryption VRF or randomized encryption implemented. |
+| **L\_PoML ZKP** proving (a) `M_θ(x_u, R) = y`, (b) `H_zk(x_u ‖ taskID) = h_u`, (c) `VRF.Vfy(vk^VRF_enc, r ‖ taskID, r_enc, π^VRF_enc) = 1`, (d) `ct = Enc(pk_u, y ‖ taskID; r_enc)` | **EZKL proof of inference + Poseidon input/output commitments**. Circuit does not verify the encryption VRF proof nor that randomized encryption was applied. |
+| **VRF transcript** `Π^VRF_i = ((z_{i,t}, π^VRF_{i,t}))_{t=1}^T, π^VRF_{enc,i})` — includes both inference noise entries and the encryption VRF proof, verified separately from the ZKP | Inference VRF transcript **implemented** — stored in `InferenceResult.vrf_transcript` and verified by `blockchain.validate_block`; encryption VRF proof **not implemented**. |
+| **Ciphertext-based lottery** `H(G(s,tx), Y) < D` | **Implemented** — `crypto.evaluate_lottery(fingerprint, ciphertexts_so_far, D)`. The validator recomputes the hash and rejects if it disagrees with `BlockHeader.lottery_hash`. |
+| **Proof-based chain binding** `bind_1 = G(s,tx)`, `bind_i = H(π_{i-1})` for i ≥ 2 | **Ciphertext-based binding** — simulation uses `bind_i = H(ct_{i-1})`; not updated to proof-based binding. |
+| **Three miner keypairs**: identity sig `(vk^sig_m, sk^sig_m)`, inference VRF `(vk^VRF_inf, sk^VRF_inf)`, and encryption VRF `(vk^VRF_enc, sk^VRF_enc)`; all registered on-chain at genesis. | **Two keypairs only**: identity + one VRF keypair per miner; no separate encryption VRF keypair. All self-declared in `BlockHeader.miner_vrf_vk`, no on-chain registry. |
+| **Meta-proof** π\_i^(2) for L\_det | **Removed**. |
+| **Digital signatures** (Ed25519 or similar) | **HMAC-SHA256** stub for identity signatures. |
+| **Commitment scheme** (Setup\_com, Commit, Open) for query inputs and model weights | **SHA-256 hash** as a binding commitment. |
+| **Distributed network** with real P2P gossip | **Simulated** via `multiprocessing.Queue` + `threading.Timer` delays. |
 
 ### What IS faithfully implemented
 
-- **Block production loop** (Algorithm 1): retrieve queries → derive seed r\_i → evaluate VRF to produce U\_i and Π^VRF\_i → run inference → deterministically encrypt output → evaluate ciphertext lottery `H(G(s,x), (ct_1, ..., ct_i)) < D`.
-- **Seed derivation**: r\_i = H(G(s,x) ‖ c\_{c,i} ‖ taskID\_i ‖ pk\_m ‖ i).
-- **Block fingerprint**: G(s,x) = SHA-256(prev\_hash ‖ hash(txns)).
-- **Separate miner keys**: each miner holds an identity keypair (pk\_m, sk\_m) *and* an independent Ed25519 VRF keypair (vk^VRF\_m, sk^VRF\_m).
+- **Block production loop** (Algorithm 1): retrieve queries → derive seed r\_i → evaluate inference VRF to produce U\_i and Π^VRF\_i → run inference → encrypt output (deterministic RSA-2048 in the sim; randomized PKE via encryption VRF in the paper) → evaluate ciphertext lottery `H(G(s,tx), Y) < D`.
+- **Seed derivation**: r\_i = H(bind\_i ‖ h\_{u,i} ‖ taskID\_i ‖ vk^sig\_m), where bind\_1 = G(s,tx) and bind\_i = H(ct\_{i-1}) for i ≥ 2 (simulation uses ciphertext binding; paper uses H(π\_{i-1})).
+- **Block fingerprint**: G(s,tx) = SHA-256(prev\_hash ‖ hash(txns)).
+- **Miner keys**: each miner holds an identity keypair (pk\_m, sk\_m) *and* a single Ed25519 VRF keypair (vk^VRF\_m, sk^VRF\_m). The paper additionally requires a separate encryption VRF keypair; **not implemented** in the simulation.
 - **Per-query VRF noise schedule**: `(z_{i,t}, π_{i,t}) ← VRF.Eval(sk^VRF, r_i ‖ t)` for t = 1..T, with all transcript entries verified by validators.
-- **Deterministic ciphertext**: same (pk\_u, y, bind, taskID) always yields the same ct\_i.
-- **Ciphertext-based chain binding and lottery**.
+- **Ciphertext-based chain binding and lottery** (paper updated chain binding to proof-based `H(π_{i-1})`; simulation still uses ciphertext-based `H(ct_{i-1})`).
 - **Block validity** (Definition 4.6, revised conditions 1–5): prev-hash and height, non-empty tuples, VRF verification, chain binding, and optional ZKP verification.
 - **Longest-chain rule** consensus.
 - **Proof-of-inference**: real EZKL SNARK proofs for the tiny U-Net.
