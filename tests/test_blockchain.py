@@ -41,15 +41,26 @@ def _make_result(
     vrf_sk: bytes,
     seed: bytes,
     T: int,
+    enc_vrf_sk: bytes = b"",
+    task_id: int = 0,
+    proof_bytes: bytes = b"fake_proof_bytes",
 ) -> InferenceResult:
+    enc_vrf_randomness = b""
+    enc_vrf_proof = b""
+    if enc_vrf_sk:
+        enc_vrf_randomness, enc_vrf_proof = vrf_eval(
+            enc_vrf_sk, seed + struct.pack(">I", task_id)
+        )
     return InferenceResult(
         query_id=query_id,
         output=[0.0] * 64,
-        proof_bytes=b"fake_proof_bytes",
+        proof_bytes=proof_bytes,
         seed_used=seed,
         chain_binding=chain_binding,
         ciphertext=ciphertext,
         vrf_transcript=_make_vrf_transcript(vrf_sk, seed, T),
+        enc_vrf_randomness=enc_vrf_randomness,
+        enc_vrf_proof=enc_vrf_proof,
     )
 
 
@@ -59,8 +70,12 @@ def _make_valid_block(
     vrf_vk: bytes,
     vrf_sk: bytes,
     num_results: int = 1,
+    enc_vrf_vk: bytes | None = None,
+    enc_vrf_sk: bytes | None = None,
 ) -> Block:
     """Build a block that passes every validator check (lottery, binding, VRF)."""
+    if enc_vrf_vk is None:
+        enc_vrf_vk, enc_vrf_sk = generate_vrf_keypair()
     tip_hash = chain.get_tip_hash()
     difficulty = chain.difficulty
     T = chain.diffusion_steps
@@ -71,6 +86,11 @@ def _make_valid_block(
     # with each other and trip the blockchain's cross-block dedup rule.
     qid_base = (chain.get_height() + 1) * 1_000_000
     queries = [_make_query(qid_base + i) for i in range(num_results)]
+
+    # Fix distinct proof bytes per result so proof-based binding is stable.
+    proof_bytes_list = [
+        b"fake_proof_" + struct.pack(">I", i) for i in range(num_results)
+    ]
 
     # Brute-force a list of ciphertexts whose cumulative hash wins the
     # lottery. With max difficulty this hits on the first try.
@@ -84,9 +104,17 @@ def _make_valid_block(
 
     results: list[InferenceResult] = []
     for i, ct in enumerate(ciphertexts):
-        binding = fingerprint if i == 0 else sha256(ciphertexts[i - 1])
+        # Proof-based chain binding: bind_1 = fingerprint, bind_i = H(pi_{i-1}).
+        binding = fingerprint if i == 0 else sha256(proof_bytes_list[i - 1])
         seed = sha256(b"seed", struct.pack(">I", i))
-        results.append(_make_result(i, ct, binding, vrf_sk, seed, T))
+        results.append(
+            _make_result(
+                i, ct, binding, vrf_sk, seed, T,
+                enc_vrf_sk=enc_vrf_sk,
+                task_id=queries[i].task_id,
+                proof_bytes=proof_bytes_list[i],
+            )
+        )
 
     header = BlockHeader(
         block_height=chain.get_height() + 1,
@@ -96,6 +124,7 @@ def _make_valid_block(
         difficulty=difficulty,
         lottery_hash=lottery_int.to_bytes(32, "big"),
         miner_vrf_vk=vrf_vk,
+        miner_enc_vrf_vk=enc_vrf_vk,
     )
     return Block(header=header, queries=queries, results=results)
 
@@ -182,6 +211,18 @@ class TestBlockValidation:
         valid, reason = bc.validate_block(block)
         assert not valid
         assert "VRF" in reason
+
+    def test_wrong_enc_vrf_vk_rejected(self):
+        bc = Blockchain(2**256 - 1)
+        pk, _ = generate_keypair()
+        vk, sk = generate_vrf_keypair()
+        block = _make_valid_block(bc, pk, vk, sk)
+        # Swap in a different encryption VRF verification key.
+        other_enc_vk, _ = generate_vrf_keypair()
+        block.header.miner_enc_vrf_vk = other_enc_vk
+        valid, reason = bc.validate_block(block)
+        assert not valid
+        assert "encryption VRF" in reason
 
     def test_wrong_chain_binding_rejected(self):
         bc = Blockchain(2**256 - 1)

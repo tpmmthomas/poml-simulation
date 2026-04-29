@@ -46,22 +46,23 @@ def block_fingerprint(prev_hash: bytes, transactions: list[Transaction]) -> byte
 
 
 def derive_seed(
-    fingerprint: bytes,
+    bind_i: bytes,
     commitment: bytes,
     task_id: int,
-    miner_pk: bytes,
-    position: int,
+    miner_vk_sig: bytes,
 ) -> bytes:
-    """r_i = H(G(s,x) || c_{c,i} || taskID_i || pk_m || i).
+    """r_i = H(bind_i || h_{u,i} || taskID_i || vk^sig_m).
 
-    Per the paper: deterministic seed for the i-th query in the proof chain.
+    Per the revised paper: bind_i is G(s,tx) for the first query and
+    H(pi_{i-1}) for subsequent ones; commitment is the query input hash
+    h_{u,i} = H_zk(x_u || taskID); miner_vk_sig is the miner's identity
+    verification key vk^sig_m.
     """
     return sha256(
-        fingerprint,
+        bind_i,
         commitment,
         struct.pack(">I", task_id),
-        miner_pk,
-        struct.pack(">I", position),
+        miner_vk_sig,
     )
 
 

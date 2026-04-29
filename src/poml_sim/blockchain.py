@@ -125,17 +125,17 @@ class Blockchain:
                 if not _verify_proof(result.proof_bytes, artifacts_dir):
                     return False, f"inference proof {i} failed verification"
 
-        # 5b. Chain binding: bind_1 = G(s,x), bind_i = H(ct_{i-1}) for i >= 2.
+        # 5b. Chain binding: bind_1 = G(s,tx), bind_i = H(pi_{i-1}) for i >= 2.
         for i, result in enumerate(block.results):
             if i == 0:
                 expected_binding = fingerprint
             else:
-                expected_binding = sha256(block.results[i - 1].ciphertext)
+                expected_binding = sha256(block.results[i - 1].proof_bytes)
             if result.chain_binding != expected_binding:
                 return False, f"chain binding mismatch at position {i}"
 
-        # 5c. VRF transcript verification: every (z_{i,t}, pi^VRF_{i,t}) must
-        #     verify against the miner's declared VRF vk on input r_i || t.
+        # 5c. Inference VRF transcript verification: every (z_{i,t}, pi^VRF_{i,t})
+        #     must verify against the miner's declared inference VRF vk.
         if not header.miner_vrf_vk:
             return False, "header missing miner_vrf_vk"
         for i, result in enumerate(block.results):
@@ -149,6 +149,20 @@ class Blockchain:
                 vrf_input = result.seed_used + struct.pack(">I", t)
                 if not vrf_verify(header.miner_vrf_vk, vrf_input, y_t, pi_t):
                     return False, f"VRF proof {i},{t} failed verification"
+
+        # 5d. Encryption VRF verification: r_enc and pi_enc must verify
+        #     against the miner's declared encryption VRF vk on seed || taskID.
+        if not header.miner_enc_vrf_vk:
+            return False, "header missing miner_enc_vrf_vk"
+        for i, (result, query) in enumerate(zip(block.results, block.queries)):
+            enc_vrf_input = result.seed_used + struct.pack(">I", query.task_id)
+            if not vrf_verify(
+                header.miner_enc_vrf_vk,
+                enc_vrf_input,
+                result.enc_vrf_randomness,
+                result.enc_vrf_proof,
+            ):
+                return False, f"encryption VRF proof at position {i} failed verification"
 
         # 6. Validate transactions
         if account_state is not None:

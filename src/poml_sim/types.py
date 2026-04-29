@@ -38,11 +38,15 @@ class InferenceResult:
     output: list[float]
     proof_bytes: bytes
     seed_used: bytes
-    chain_binding: bytes = b""  # bind_i per paper §4.4 (H(ct_{i-1}) for i>=2)
-    ciphertext: bytes = b""  # ct_i = Enc(pk_u, y || bind_i || taskID)
+    chain_binding: bytes = b""  # bind_i per paper §4.4 (H(pi_{i-1}) for i>=2)
+    ciphertext: bytes = b""  # ct_i = Enc(pk_u, y || taskID; r_enc)
     # Pi^VRF_i: list of (z_t, pi_t) for t = 1..T binding the noise schedule
     # used by this inference. Verified per-block against header.miner_vrf_vk.
     vrf_transcript: list[tuple[bytes, bytes]] = field(default_factory=list)
+    # Encryption VRF output and proof: r_enc, pi_enc from
+    # VRF.Eval(sk_VRF_enc, seed || taskID). Verified against header.miner_enc_vrf_vk.
+    enc_vrf_randomness: bytes = b""
+    enc_vrf_proof: bytes = b""
 
 
 @dataclass
@@ -55,8 +59,10 @@ class BlockHeader:
     timestamp: float
     difficulty: int
     lottery_hash: bytes
-    # Miner's VRF verification key (Ed25519 raw). Self-declared per block.
+    # Miner's inference VRF verification key (Ed25519 raw). Self-declared per block.
     miner_vrf_vk: bytes = b""
+    # Miner's encryption VRF verification key (Ed25519 raw). Self-declared per block.
+    miner_enc_vrf_vk: bytes = b""
 
 
 @dataclass

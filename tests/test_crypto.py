@@ -43,23 +43,22 @@ class TestBlockFingerprint:
 
 class TestDeriveSeed:
     def test_deterministic(self):
-        fp = b"\xaa" * 32
+        bind_i = b"\xaa" * 32
         commitment = b"\xbb" * 32
-        s1 = derive_seed(fp, commitment, 0, b"\xcc" * 32, 1)
-        s2 = derive_seed(fp, commitment, 0, b"\xcc" * 32, 1)
+        s1 = derive_seed(bind_i, commitment, 0, b"\xcc" * 32)
+        s2 = derive_seed(bind_i, commitment, 0, b"\xcc" * 32)
         assert s1 == s2
         assert len(s1) == 32
 
-    def test_different_position(self):
-        fp = b"\xaa" * 32
-        s1 = derive_seed(fp, b"\xbb" * 32, 0, b"\xcc" * 32, 1)
-        s2 = derive_seed(fp, b"\xbb" * 32, 0, b"\xcc" * 32, 2)
+    def test_different_bind_i(self):
+        s1 = derive_seed(b"\xaa" * 32, b"\xbb" * 32, 0, b"\xcc" * 32)
+        s2 = derive_seed(b"\xdd" * 32, b"\xbb" * 32, 0, b"\xcc" * 32)
         assert s1 != s2
 
     def test_different_miner(self):
-        fp = b"\xaa" * 32
-        s1 = derive_seed(fp, b"\xbb" * 32, 0, b"\xcc" * 32, 1)
-        s2 = derive_seed(fp, b"\xbb" * 32, 0, b"\xdd" * 32, 1)
+        bind_i = b"\xaa" * 32
+        s1 = derive_seed(bind_i, b"\xbb" * 32, 0, b"\xcc" * 32)
+        s2 = derive_seed(bind_i, b"\xbb" * 32, 0, b"\xdd" * 32)
         assert s1 != s2
 
 

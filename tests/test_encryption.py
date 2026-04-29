@@ -1,4 +1,4 @@
-"""Tests for deterministic output encryption and ciphertext-based chain binding."""
+"""Tests for randomized output encryption and VRF-based encryption randomness."""
 
 import pytest
 
@@ -28,20 +28,20 @@ class TestEncryptDecrypt:
     def test_roundtrip(self):
         pk, sk = generate_encryption_keypair()
         output_values = [0.1, 0.2, 0.3, -0.5]
-        chain_binding = b"\xaa" * 32
+        enc_randomness = b"\xaa" * 32
         task_id = 42
 
-        encrypted = encrypt_output(pk, output_values, chain_binding, task_id)
+        encrypted = encrypt_output(pk, output_values, enc_randomness, task_id)
         # Textbook RSA-2048: ciphertext is a whole number of 256-byte blocks.
         assert len(encrypted) > 0
         assert len(encrypted) % 256 == 0
 
-        dec_output, dec_binding, dec_task_id = decrypt_output(
+        dec_output, dec_enc_randomness, dec_task_id = decrypt_output(
             sk, encrypted, num_output_floats=4
         )
 
         assert dec_task_id == task_id
-        assert dec_binding == chain_binding
+        assert dec_enc_randomness == enc_randomness
         for a, b in zip(output_values, dec_output):
             assert abs(a - b) < 1e-6
 
@@ -63,31 +63,30 @@ class TestEncryptDecrypt:
         assert ct1 != ct2
 
     def test_same_plaintext_same_ciphertext(self):
-        """Determinism: repeated encryption under the same key yields
-        identical ciphertext — required so that the lottery hash
-        H(G(s,x), (ct_1, ..., ct_k)) is uniquely determined by inputs."""
+        """Determinism: repeated encryption with the same (pk, r_enc, y, taskID)
+        yields identical ciphertext — required so the lottery hash is stable."""
         pk, _ = generate_encryption_keypair()
         values = [0.1 * i for i in range(64)]
-        binding = b"\xab" * 32
+        enc_randomness = b"\xab" * 32
         tid = 777
-        ct1 = encrypt_output(pk, values, binding, tid)
-        ct2 = encrypt_output(pk, values, binding, tid)
-        ct3 = encrypt_output(pk, values, binding, tid)
+        ct1 = encrypt_output(pk, values, enc_randomness, tid)
+        ct2 = encrypt_output(pk, values, enc_randomness, tid)
+        ct3 = encrypt_output(pk, values, enc_randomness, tid)
         assert ct1 == ct2 == ct3
 
     def test_large_output(self):
         pk, sk = generate_encryption_keypair()
         output = [float(i) / 100 for i in range(64)]
-        binding = sha256(b"test_binding")
+        enc_randomness = sha256(b"test_enc_randomness")
         task_id = 999
 
-        encrypted = encrypt_output(pk, output, binding, task_id)
-        dec_output, dec_binding, dec_tid = decrypt_output(
+        encrypted = encrypt_output(pk, output, enc_randomness, task_id)
+        dec_output, dec_enc_randomness, dec_tid = decrypt_output(
             sk, encrypted, num_output_floats=64
         )
 
         assert dec_tid == task_id
-        assert dec_binding == binding
+        assert dec_enc_randomness == enc_randomness
         for a, b in zip(output, dec_output):
             assert abs(a - b) < 1e-5
 
@@ -99,19 +98,19 @@ class TestEncryptDecrypt:
 
 class TestChainBinding:
     def test_first_binding_is_fingerprint(self):
-        """bind_1 = G(s,x) = fingerprint."""
+        """bind_1 = G(s,tx) = fingerprint."""
         fingerprint = block_fingerprint(b"\x01" * 32, [])
         assert len(fingerprint) == 32
 
-    def test_subsequent_binding_is_ciphertext_hash(self):
-        """Revised paper §4.4: bind_i = H(ct_{i-1}) for i >= 2."""
-        ciphertext = b"some_ciphertext_bytes_here"
-        binding = sha256(ciphertext)
+    def test_subsequent_binding_is_proof_hash(self):
+        """Revised paper: bind_i = H(pi_{i-1}) for i >= 2."""
+        proof_bytes = b"some_proof_bytes_here"
+        binding = sha256(proof_bytes)
         assert len(binding) == 32
 
     def test_chain_binding_deterministic(self):
-        ct = b"deterministic_ciphertext"
-        assert sha256(ct) == sha256(ct)
+        proof = b"deterministic_proof"
+        assert sha256(proof) == sha256(proof)
 
-    def test_different_ciphertexts_different_bindings(self):
-        assert sha256(b"ct_A") != sha256(b"ct_B")
+    def test_different_proofs_different_bindings(self):
+        assert sha256(b"proof_A") != sha256(b"proof_B")

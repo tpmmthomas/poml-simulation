@@ -1,21 +1,21 @@
-"""Deterministic public-key encryption for PoML inference outputs.
+"""Simulated randomized public-key encryption for PoML inference outputs.
 
-The paper's revised protocol requires Enc to be deterministic: for a fixed
-user public key and plaintext (y_i || bind_i || taskID), the ciphertext
-must be unique so that the lottery hash H(G(s,x), (ct_1, ..., ct_i))
-is itself uniquely determined by the inference outputs.
+The paper's revised protocol requires Enc to be randomized (IND-CPA), with
+encryption randomness r_enc derived from a dedicated encryption VRF:
+  r_enc, pi_enc = VRF.Eval(sk_VRF_enc, seed_i || taskID)
+The ciphertext ct_i = Enc(pk_u, y_i || taskID; r_enc) binds the output to
+the VRF-derived randomness, making it unique and verifiable.
 
-Implementation: textbook RSA-2048. We generate a standard RSA-2048 key
-pair via `cryptography`, then perform encryption/decryption as
-`c = m^e mod n` / `m = c^d mod n` using Python's built-in `pow()`. The
-plaintext is chunked into 245-byte blocks (safely below the 256-byte
-modulus size), with a 4-byte big-endian length prefix so the final
-chunk's zero padding can be stripped on decryption.
+Implementation: textbook RSA-2048 with r_enc embedded in the plaintext.
+Since textbook RSA has no internal randomness parameter, we include the
+32-byte VRF output r_enc as a prefix in the plaintext:
+  plaintext = r_enc (32B) || y_i (floats) || taskID (4B)
+This makes the ciphertext uniquely determined by (pk_u, r_enc, y_i, taskID),
+and r_enc is recoverable on decryption for ZK statement verification.
 
-Security note: textbook RSA is one-way under the RSA assumption but is
-*not* IND-CPA secure (malleable, deterministic). That is exactly what we
-want for simulation purposes here — IND-CPA would preclude determinism.
-Not suitable for production use.
+Note: textbook RSA is NOT IND-CPA secure in the standard sense (no semantic
+security) and is not suitable for production use. The r_enc prefix gives
+the ciphertext dependence on the VRF randomness as required by the paper.
 """
 
 from __future__ import annotations
@@ -63,11 +63,12 @@ def _load_private_numbers(sk_bytes: bytes) -> tuple[int, int]:
 
 def _serialize_plaintext(
     output_values: list[float],
-    chain_binding: bytes,
+    enc_randomness: bytes,
     task_id: int,
 ) -> bytes:
-    plaintext = struct.pack(f">{len(output_values)}f", *output_values)
-    plaintext += chain_binding
+    # Layout: r_enc (32B) || y (floats) || taskID (4B)
+    plaintext = enc_randomness
+    plaintext += struct.pack(f">{len(output_values)}f", *output_values)
     plaintext += struct.pack(">I", task_id)
     return plaintext
 
@@ -75,25 +76,30 @@ def _serialize_plaintext(
 def _parse_plaintext(
     plaintext: bytes, num_output_floats: int
 ) -> tuple[list[float], bytes, int]:
+    # r_enc is the first 32 bytes.
+    enc_randomness = plaintext[:32]
     float_size = num_output_floats * 4
-    output_bytes = plaintext[:float_size]
-    chain_binding = plaintext[float_size : float_size + 32]
-    task_id_bytes = plaintext[float_size + 32 : float_size + 36]
+    output_bytes = plaintext[32 : 32 + float_size]
+    task_id_bytes = plaintext[32 + float_size : 32 + float_size + 4]
     output_values = list(struct.unpack(f">{num_output_floats}f", output_bytes))
     task_id = struct.unpack(">I", task_id_bytes)[0]
-    return output_values, chain_binding, task_id
+    return output_values, enc_randomness, task_id
 
 
 def encrypt_output(
     recipient_pk_bytes: bytes,
     output_values: list[float],
-    chain_binding: bytes,
+    enc_randomness: bytes,
     task_id: int,
 ) -> bytes:
-    """Deterministically encrypt y || bind || taskID under an RSA pk."""
+    """Encrypt y || taskID under pk_u with VRF-derived randomness r_enc.
+
+    Plaintext layout: r_enc (32B) || y (floats) || taskID (4B).
+    The r_enc value is included so decryptors can verify the VRF relationship.
+    """
     n, e = _load_public_numbers(recipient_pk_bytes)
 
-    plaintext = _serialize_plaintext(output_values, chain_binding, task_id)
+    plaintext = _serialize_plaintext(output_values, enc_randomness, task_id)
     # Length prefix lets the decryptor strip zero-padding on the final
     # chunk without ambiguity.
     framed = struct.pack(">I", len(plaintext)) + plaintext
@@ -115,7 +121,7 @@ def decrypt_output(
     encrypted_data: bytes,
     num_output_floats: int,
 ) -> tuple[list[float], bytes, int]:
-    """Inverse of encrypt_output. Returns (values, chain_binding, task_id)."""
+    """Inverse of encrypt_output. Returns (values, enc_randomness, task_id)."""
     n, d = _load_private_numbers(recipient_sk_bytes)
 
     if len(encrypted_data) == 0 or len(encrypted_data) % _RSA_MODULUS_BYTES != 0:

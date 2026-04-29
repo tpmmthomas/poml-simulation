@@ -40,6 +40,8 @@ def _make_miner(inbox=None, stop_event=None) -> MinerProcess:
         miner_sk=b"\x02" * 32,
         miner_vrf_vk=b"\x03" * 32,
         miner_vrf_sk=b"\x04" * 32,
+        miner_enc_vrf_vk=b"\x05" * 32,
+        miner_enc_vrf_sk=b"\x06" * 32,
         mempool=None,
         inbox=inbox if inbox is not None else multiprocessing.Queue(),
         coordinator_queue=multiprocessing.Queue(),

@@ -29,7 +29,7 @@ from poml_sim.crypto import (
 )
 from poml_sim.network import MessageType, NetworkMessage
 from poml_sim.types import Block, BlockHeader, InferenceResult, Query
-from poml_sim.vrf import vrf_noise_schedule
+from poml_sim.vrf import vrf_eval, vrf_noise_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,8 @@ class MinerProcess(multiprocessing.Process):
         miner_sk: bytes,
         miner_vrf_vk: bytes,
         miner_vrf_sk: bytes,
+        miner_enc_vrf_vk: bytes,
+        miner_enc_vrf_sk: bytes,
         mempool: Any,  # Mempool — can't type-hint due to pickling
         inbox: multiprocessing.Queue,
         coordinator_queue: multiprocessing.Queue,
@@ -117,10 +119,12 @@ class MinerProcess(multiprocessing.Process):
         self.miner_id = miner_id
         self.miner_pk = miner_pk
         self.miner_sk = miner_sk
-        # Separate VRF keypair used to derive per-step inference noise per
-        # the revised paper protocol (§PoML Protocol).
+        # Inference VRF keypair: derives per-step noise schedule U_i.
         self.miner_vrf_vk = miner_vrf_vk
         self.miner_vrf_sk = miner_vrf_sk
+        # Encryption VRF keypair: derives per-query encryption randomness r_enc.
+        self.miner_enc_vrf_vk = miner_enc_vrf_vk
+        self.miner_enc_vrf_sk = miner_enc_vrf_sk
         self.mempool = mempool
         self.inbox = inbox
         self.coordinator_queue = coordinator_queue
@@ -203,20 +207,19 @@ class MinerProcess(multiprocessing.Process):
 
                 position = i + 1
 
-                # Step 1: Chain binding per paper §4.4 (revised).
-                # bind_1 = G(s,x), bind_i = H(ct_{i-1}) for i >= 2.
+                # Step 1: Proof-based chain binding per revised paper §4.4.
+                # bind_1 = G(s,tx), bind_i = H(pi_{i-1}) for i >= 2.
                 if position == 1:
                     chain_binding = fingerprint
                 else:
-                    chain_binding = sha256(ciphertexts_so_far[-1])
+                    chain_binding = sha256(results[-1].proof_bytes)
 
-                # Step 2: Derive seed r_i = H(G(s,x) || c_c || taskID || pk_m || i)
+                # Step 2: Derive seed r_i = H(bind_i || h_{u,i} || taskID_i || vk^sig_m).
                 seed = derive_seed(
-                    fingerprint,
+                    chain_binding,
                     query.commitment,
                     query.task_id,
                     self.miner_pk,
-                    position,
                 )
 
                 # Step 3: Derive noise schedule U_i and VRF transcript via the
@@ -271,16 +274,26 @@ class MinerProcess(multiprocessing.Process):
 
                 output_values, proof_bytes = proof_result
 
-                # Step 5: Deterministic encryption.
-                # ct_i = Enc(pk_u, y_i || bind_i || taskID). Paper requires a
-                # deterministic PKE so the lottery hash over ciphertexts is
-                # unambiguous; we use textbook RSA (see encryption.py).
+                # Step 5a: Derive encryption randomness via the encryption VRF.
+                # r_enc, pi_enc = VRF.Eval(sk_VRF_enc, seed || taskID)
+                # This gives each ciphertext unique, verifiable randomness.
+                import struct as _struct
+
+                r_enc, pi_enc = vrf_eval(
+                    self.miner_enc_vrf_sk,
+                    seed + _struct.pack(">I", query.task_id),
+                )
+
+                # Step 5b: Encrypt output with VRF-derived randomness.
+                # ct_i = Enc(pk_u, y_i || taskID; r_enc). The r_enc is
+                # embedded in the ciphertext plaintext so the decryptor can
+                # verify the VRF relationship. ZKP does not attest to this.
                 from poml_sim.encryption import encrypt_output
 
                 ciphertext = encrypt_output(
                     recipient_pk_bytes=query.encryption_pk,
                     output_values=output_values,
-                    chain_binding=chain_binding,
+                    enc_randomness=r_enc,
                     task_id=query.task_id,
                 )
 
@@ -292,6 +305,8 @@ class MinerProcess(multiprocessing.Process):
                     chain_binding=chain_binding,
                     ciphertext=ciphertext,
                     vrf_transcript=transcript,
+                    enc_vrf_randomness=r_enc,
+                    enc_vrf_proof=pi_enc,
                 )
                 results.append(result)
                 ciphertexts_so_far.append(ciphertext)
@@ -481,6 +496,7 @@ class MinerProcess(multiprocessing.Process):
             difficulty=self.config["difficulty_int"],
             lottery_hash=lottery_hash,
             miner_vrf_vk=self.miner_vrf_vk,
+            miner_enc_vrf_vk=self.miner_enc_vrf_vk,
         )
         return Block(
             header=header,
