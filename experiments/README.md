@@ -77,8 +77,11 @@ python experiments/exp1_block_time_stability.py --blocks 50 --target 300
 # 3. Experiment 2: block-time sweep + miner-count sweep, 10 blocks each (~5 h)
 python experiments/exp2_wasted_work.py --blocks 10
 
-# 4. Experiment 5: see docs/experiments.md for calibration and final-run commands
+# 4. Experiment 5 smoke check
 python experiments/exp5_uniform_fee_collisions.py smoke
+
+# Complete Exp 5 workflow with progress and resumable timing calibration
+python experiments/exp5_uniform_fee_collisions.py run-all
 ```
 
 ### Appendix SD experiments

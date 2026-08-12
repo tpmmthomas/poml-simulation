@@ -162,7 +162,64 @@ python experiments/exp5_uniform_fee_collisions.py smoke \
     --output-dir experiments/results/exp5_smoke
 ```
 
-### 2. Measure real EZKL attempt times
+### 2. Run the complete workflow
+
+The three calibration/collection stages can be run with one command:
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py run-all
+```
+
+This prints stage progress such as:
+
+```text
+[run-all] Stage 1/3: timing calibration
+[timing] starting attempt 1 (0/30 successful)
+[timing] attempt 1/30 still running (10s elapsed); press Ctrl+C to stop
+[timing] completed 1/30 successful (86.421s)
+[run-all] Stage 1/3 complete
+[run-all] Stage 2/3: difficulty calibration
+[difficulty] cell 1/9: M=10, target=300s, running 1000 races
+[difficulty] cell 1/9: 100/1000 races complete
+...
+[run-all] Stage 3/3: final collision campaign
+[final] config 1/27: M=10, target=300s, Q=1000; running 1000 races
+[final] config 1/27: 100/1000 races complete
+```
+
+The default reusable artifacts are written to
+`experiments/results/exp5_run_all/`; final output is written to
+`experiments/results/exp5_final_2026_08_12/`. Existing valid timing and
+difficulty artifacts are reused on subsequent `run-all` invocations. The
+final output directory remains write-once and must be moved or renamed before
+starting a new final campaign.
+
+Use the options below to change scale or paths:
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py run-all \
+    --attempts 30 \
+    --verification-runs 1000 \
+    --cpu-limit 16 \
+    --work-dir experiments/results/exp5_run_all \
+    --output-dir experiments/results/exp5_final_2026_08_12
+```
+
+During timing calibration, each native EZKL attempt runs in a child process.
+The parent prints a heartbeat every 10 seconds and remains responsive to
+`Ctrl+C`. Interrupting an attempt terminates the child and writes
+`timing_calibration.json.partial.json`. Re-run `run-all` to resume that
+checkpoint, or run the timing command directly with `--resume`:
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py calibrate-timings \
+    --attempts 30 \
+    --cpu-limit 16 \
+    --output experiments/results/exp5_run_all/timing_calibration.json \
+    --resume
+```
+
+### 3. Measure real EZKL attempt times
 
 Run from a clean committed checkout. The command pins the process to 16 logical
 CPUs, fixes Rayon/BLAS thread limits, uses one fixed valid input, records 30
@@ -176,7 +233,7 @@ python experiments/exp5_uniform_fee_collisions.py calibrate-timings \
     --output experiments/results/exp5_timing_calibration.json
 ```
 
-### 3. Calibrate fixed difficulties
+### 4. Calibrate fixed difficulties
 
 For each $(M,\tau)$ pair, the threshold is calculated from the empirical
 arithmetic mean $E[T]$:
@@ -198,7 +255,7 @@ python experiments/exp5_uniform_fee_collisions.py calibrate-difficulty \
     --output experiments/results/exp5_difficulty_calibration.json
 ```
 
-### 4. Run the frozen final campaign
+### 5. Run the frozen final campaign
 
 The committed `experiments/exp5_seed_manifest.json` fixes separate public seed
 roots for smoke, pilot, timing, difficulty calibration, and final runs. Each

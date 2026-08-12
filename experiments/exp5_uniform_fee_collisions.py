@@ -16,6 +16,7 @@ import heapq
 import importlib.metadata
 import json
 import math
+import multiprocessing
 import os
 import platform
 import random
@@ -27,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_FLOOR, localcontext
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 
@@ -35,6 +37,8 @@ UINT256_SIZE = 1 << 256
 MAX_DIFFICULTY = UINT256_SIZE - 1
 SIMULATION_MODE = "empirical_discrete_event_v1"
 SCHEMA_VERSION = 1
+TIMING_HEARTBEAT_S = 10.0
+TIMING_POLL_S = 1.0
 DEFAULT_SEED_MANIFEST = PROJECT_ROOT / "experiments" / "exp5_seed_manifest.json"
 MODEL_PROOF_FILES = (
     "network.onnx",
@@ -565,12 +569,132 @@ def _pin_calibration_resources(cpu_limit: int) -> list[int] | None:
     return selected
 
 
+def _timing_attempt_worker(
+    conditioning: list[float],
+    noise: list[float],
+    artifacts_dir: str,
+    input_shape: list[int],
+    result_queue: Any,
+) -> None:
+    """Run one native EZKL attempt in a process the parent can terminate."""
+    try:
+        src_path = str(PROJECT_ROOT / "src")
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        from poml_sim.zkp import run_inference_and_prove
+
+        started = time.perf_counter()
+        run_inference_and_prove(
+            conditioning=conditioning,
+            noise=noise,
+            artifacts_dir=artifacts_dir,
+            input_shape=input_shape,
+        )
+        result_queue.put(("ok", time.perf_counter() - started))
+    except BaseException as error:
+        result_queue.put(("error", repr(error)))
+
+
+def _terminate_process(process: multiprocessing.Process) -> None:
+    """Terminate a native-work child, escalating if it ignores SIGTERM."""
+    if not process.is_alive():
+        process.join(timeout=1.0)
+        return
+    process.terminate()
+    process.join(timeout=5.0)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=2.0)
+
+
+def _run_timing_attempt(
+    *,
+    attempt_number: int,
+    total_attempts: int,
+    conditioning: list[float],
+    noise: list[float],
+    artifacts_dir: Path,
+) -> tuple[float | None, str | None]:
+    """Run one timing attempt while keeping the parent responsive."""
+    start_methods = multiprocessing.get_all_start_methods()
+    context = multiprocessing.get_context("fork" if "fork" in start_methods else None)
+    result_queue = context.Queue()
+    process = context.Process(
+        target=_timing_attempt_worker,
+        args=(conditioning, noise, str(artifacts_dir), [1, 2, 8, 8], result_queue),
+        daemon=True,
+    )
+    process.start()
+    started = time.perf_counter()
+    next_heartbeat = started + TIMING_HEARTBEAT_S
+    try:
+        while True:
+            try:
+                result = result_queue.get(timeout=TIMING_POLL_S)
+            except Empty:
+                now = time.perf_counter()
+                if now >= next_heartbeat:
+                    print(
+                        f"[timing] attempt {attempt_number}/{total_attempts} still running "
+                        f"({now - started:.0f}s elapsed); press Ctrl+C to stop",
+                        flush=True,
+                    )
+                    next_heartbeat = now + TIMING_HEARTBEAT_S
+                if not process.is_alive():
+                    return None, "timing worker exited without a result"
+                continue
+            if result and result[0] == "ok":
+                return float(result[1]), None
+            if result and result[0] == "error":
+                return None, str(result[1])
+            return None, f"unexpected timing worker result: {result!r}"
+    except KeyboardInterrupt:
+        print(
+            f"[timing] stopping attempt {attempt_number}/{total_attempts}...",
+            flush=True,
+        )
+        raise
+    finally:
+        _terminate_process(process)
+        result_queue.close()
+        result_queue.join_thread()
+
+
+def _timing_partial_path(output_path: Path) -> Path:
+    return output_path.with_name(output_path.name + ".partial.json")
+
+
+def _write_timing_checkpoint(
+    path: Path,
+    *,
+    revision: dict[str, Any],
+    attempts: int,
+    samples: list[float],
+    failures: list[dict[str, str | int]],
+    model_configuration: dict[str, Any],
+) -> None:
+    _write_json(
+        path,
+        {
+            "schema_version": SCHEMA_VERSION,
+            "artifact_kind": "ezkl_attempt_timing_checkpoint",
+            "simulator_revision": revision,
+            "samples_requested": attempts,
+            "duration_samples_s": samples,
+            "failed_attempts": failures,
+            "model_proof_configuration": model_configuration,
+            "updated_utc": _utc_now(),
+        },
+    )
+
+
 def calibrate_attempt_timings(
     *,
     attempts: int,
     output_path: Path,
     artifacts_dir: Path,
     cpu_limit: int,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Measure isolated real EZKL inference-plus-proof completion times."""
     if attempts <= 0:
@@ -580,14 +704,11 @@ def calibrate_attempt_timings(
     revision = _git_revision()
     if revision["dirty"]:
         raise RuntimeError("timing calibration requires a clean git worktree")
+    partial_path = _timing_partial_path(output_path)
     selected_cpus = _pin_calibration_resources(cpu_limit)
     environment_before = host_environment()
     load_before = os.getloadavg() if hasattr(os, "getloadavg") else None
-
-    src_path = str(PROJECT_ROOT / "src")
-    if src_path not in sys.path:
-        sys.path.insert(0, src_path)
-    from poml_sim.zkp import run_inference_and_prove
+    model_configuration = model_proof_configuration(artifacts_dir)
 
     spatial = 8 * 8
     conditioning = [0.0] * spatial
@@ -597,24 +718,77 @@ def calibrate_attempt_timings(
     ).encode("ascii")
     samples: list[float] = []
     failures: list[dict[str, str | int]] = []
-    attempt_number = 0
+    if partial_path.exists():
+        if not resume:
+            raise FileExistsError(
+                f"found interrupted calibration checkpoint: {partial_path}; "
+                "rerun with --resume or use run-all"
+            )
+        checkpoint = _load_json(partial_path)
+        if checkpoint.get("samples_requested") != attempts:
+            raise ValueError("timing checkpoint was created for a different attempt count")
+        if checkpoint.get("simulator_revision") != revision:
+            raise ValueError("timing checkpoint revision does not match this checkout")
+        if checkpoint.get("model_proof_configuration") != model_configuration:
+            raise ValueError("timing checkpoint model/proof artifacts do not match")
+        samples = [float(value) for value in checkpoint.get("duration_samples_s", [])]
+        failures = list(checkpoint.get("failed_attempts", []))
+        print(
+            f"[timing] resuming checkpoint: {len(samples)}/{attempts} successful, "
+            f"{len(failures)} failed attempts already recorded",
+            flush=True,
+        )
+
+    attempt_number = len(samples) + len(failures)
     while len(samples) < attempts:
         attempt_number += 1
-        started = time.perf_counter()
+        print(
+            f"[timing] starting attempt {attempt_number} "
+            f"({len(samples)}/{attempts} successful)",
+            flush=True,
+        )
         try:
-            run_inference_and_prove(
+            duration, error = _run_timing_attempt(
+                attempt_number=attempt_number,
+                total_attempts=attempts,
                 conditioning=conditioning,
                 noise=noise,
-                artifacts_dir=str(artifacts_dir),
-                input_shape=[1, 2, 8, 8],
+                artifacts_dir=artifacts_dir,
             )
-        except Exception as error:
-            failures.append({"attempt_number": attempt_number, "error": repr(error)})
-            print(f"[timing] attempt {attempt_number} failed: {error!r}", file=sys.stderr)
-            continue
-        duration = time.perf_counter() - started
-        samples.append(duration)
-        print(f"[timing] {len(samples)}/{attempts}: {duration:.3f}s", flush=True)
+        except KeyboardInterrupt:
+            _write_timing_checkpoint(
+                partial_path,
+                revision=revision,
+                attempts=attempts,
+                samples=samples,
+                failures=failures,
+                model_configuration=model_configuration,
+            )
+            print(
+                f"[timing] interrupted; checkpoint saved to {partial_path}. "
+                "Rerun with --resume to continue.",
+                flush=True,
+            )
+            raise
+        if error is not None:
+            failures.append({"attempt_number": attempt_number, "error": error})
+            print(f"[timing] attempt {attempt_number} failed: {error}", file=sys.stderr, flush=True)
+        else:
+            assert duration is not None
+            samples.append(duration)
+            print(
+                f"[timing] completed {len(samples)}/{attempts} successful "
+                f"({duration:.3f}s)",
+                flush=True,
+            )
+        _write_timing_checkpoint(
+            partial_path,
+            revision=revision,
+            attempts=attempts,
+            samples=samples,
+            failures=failures,
+            model_configuration=model_configuration,
+        )
 
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -638,7 +812,7 @@ def calibrate_attempt_timings(
         },
         "environment_before": environment_before,
         "environment_after": host_environment(),
-        "model_proof_configuration": model_proof_configuration(artifacts_dir),
+        "model_proof_configuration": model_configuration,
         "fixed_input": {
             "description": "64 zero conditioning values and 64 zero noise values",
             "sha256": hashlib.sha256(fixed_input_bytes).hexdigest(),
@@ -652,6 +826,7 @@ def calibrate_attempt_timings(
     }
     payload["artifact_id"] = _artifact_identity(payload)
     _write_json(output_path, payload)
+    partial_path.unlink(missing_ok=True)
     return payload
 
 
@@ -692,12 +867,20 @@ def calibrate_difficulties(
     samples = [float(value) for value in timing["duration_samples_s"]]
     mean_attempt = statistics.fmean(samples)
     entries: list[dict[str, Any]] = []
+    total_cells = len(miners_grid) * len(target_grid)
+    cell_number = 0
 
     for miners in miners_grid:
         for target in target_grid:
+            cell_number += 1
             difficulty = analytical_difficulty(mean_attempt, miners, target)
             adoption_times: list[float] = []
             failures = 0
+            print(
+                f"[difficulty] cell {cell_number}/{total_cells}: "
+                f"M={miners}, target={target}s, running {verification_runs} races",
+                flush=True,
+            )
             for replicate in range(verification_runs):
                 seed = derive_seed(
                     calibration_root,
@@ -720,6 +903,13 @@ def calibrate_difficulties(
                     adoption_times.append(float(run["adoption_time_s"]))
                 else:
                     failures += 1
+                progress_step = max(1, verification_runs // 10)
+                if (replicate + 1) % progress_step == 0 or replicate + 1 == verification_runs:
+                    print(
+                        f"[difficulty] cell {cell_number}/{total_cells}: "
+                        f"{replicate + 1}/{verification_runs} races complete",
+                        flush=True,
+                    )
             stats = summarize_adoption_times(adoption_times)
             entries.append(
                 {
@@ -958,6 +1148,18 @@ def run_final_campaign(
         for target in seeds["grid"]["target_block_time_s"]:
             difficulty = difficulties[(int(miners), float(target))]
             for query_pool_size in seeds["grid"]["query_pool_size"]:
+                config_number = len(configurations) + 1
+                total_configurations = (
+                    len(seeds["grid"]["miners"])
+                    * len(seeds["grid"]["target_block_time_s"])
+                    * len(seeds["grid"]["query_pool_size"])
+                )
+                print(
+                    f"[final] config {config_number}/{total_configurations}: "
+                    f"M={miners}, target={target}s, Q={query_pool_size}; "
+                    f"running {replicates} races",
+                    flush=True,
+                )
                 config = {
                     "schema_version": SCHEMA_VERSION,
                     "simulation_mode": SIMULATION_MODE,
@@ -1026,6 +1228,13 @@ def run_final_campaign(
                         detail_attempts.extend(attempts)
                     if run["status"] != "adopted":
                         any_failures = True
+                    progress_step = max(1, replicates // 10)
+                    if (replicate + 1) % progress_step == 0 or replicate + 1 == replicates:
+                        print(
+                            f"[final] config {config_number}/{total_configurations}: "
+                            f"{replicate + 1}/{replicates} races complete",
+                            flush=True,
+                        )
 
                 detail_dir.mkdir(parents=True, exist_ok=True)
                 _write_json(
@@ -1238,6 +1447,78 @@ def run_smoke(output_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def run_all(
+    *,
+    work_dir: Path,
+    artifacts_dir: Path,
+    attempts: int,
+    cpu_limit: int,
+    verification_runs: int,
+    final_output_dir: Path,
+) -> dict[str, Any]:
+    """Run timing, difficulty, and final collection as one resumable workflow."""
+    work_dir.mkdir(parents=True, exist_ok=True)
+    timing_path = work_dir / "timing_calibration.json"
+    difficulty_path = work_dir / "difficulty_calibration.json"
+
+    print("[run-all] Stage 1/3: timing calibration", flush=True)
+    if timing_path.exists():
+        timing = _load_json(timing_path)
+        _validate_timing_artifact(timing, artifacts_dir, strict_revision=True)
+        print(
+            f"[run-all] timing artifact already valid; reusing "
+            f"{len(timing['duration_samples_s'])}/{timing['samples_requested']} samples",
+            flush=True,
+        )
+    else:
+        timing = calibrate_attempt_timings(
+            attempts=attempts,
+            output_path=timing_path,
+            artifacts_dir=artifacts_dir,
+            cpu_limit=cpu_limit,
+            resume=True,
+        )
+    print("[run-all] Stage 1/3 complete", flush=True)
+
+    print("[run-all] Stage 2/3: difficulty calibration", flush=True)
+    if difficulty_path.exists():
+        difficulty = _load_json(difficulty_path)
+        seed_manifest = _load_json(DEFAULT_SEED_MANIFEST)
+        _validate_difficulty_artifact(
+            difficulty,
+            timing,
+            timing_path,
+            seed_manifest,
+            DEFAULT_SEED_MANIFEST,
+        )
+        print("[run-all] difficulty artifact already valid; reusing", flush=True)
+    else:
+        difficulty = calibrate_difficulties(
+            timing_path=timing_path,
+            output_path=difficulty_path,
+            seed_manifest_path=DEFAULT_SEED_MANIFEST,
+            artifacts_dir=artifacts_dir,
+            verification_runs=verification_runs,
+        )
+    print("[run-all] Stage 2/3 complete", flush=True)
+
+    print("[run-all] Stage 3/3: final collision campaign", flush=True)
+    campaign = run_final_campaign(
+        timing_path=timing_path,
+        calibration_path=difficulty_path,
+        seed_manifest_path=DEFAULT_SEED_MANIFEST,
+        artifacts_dir=artifacts_dir,
+        output_dir=final_output_dir,
+    )
+    print(
+        f"[run-all] Stage 3/3 complete: {campaign['run_count']:,} runs, "
+        f"{campaign['summary_count']} configurations",
+        flush=True,
+    )
+    print(f"[run-all] outputs: {final_output_dir}", flush=True)
+    return campaign
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1247,6 +1528,11 @@ def build_parser() -> argparse.ArgumentParser:
     timing.add_argument("--cpu-limit", type=int, default=16)
     timing.add_argument("--artifacts-dir", type=Path, default=PROJECT_ROOT / "model")
     timing.add_argument("--output", type=Path, required=True)
+    timing.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from <output>.partial.json after Ctrl+C",
+    )
 
     difficulty = subparsers.add_parser(
         "calibrate-difficulty", help="Derive and verify one threshold per (M, target)"
@@ -1263,6 +1549,29 @@ def build_parser() -> argparse.ArgumentParser:
     final.add_argument("--output-dir", type=Path, required=True)
     final.add_argument("--seed-manifest", type=Path, default=DEFAULT_SEED_MANIFEST)
     final.add_argument("--artifacts-dir", type=Path, default=PROJECT_ROOT / "model")
+
+    run_all_parser = subparsers.add_parser(
+        "run-all",
+        help="Run timing calibration, difficulty calibration, and final collection",
+    )
+    run_all_parser.add_argument(
+        "--work-dir",
+        type=Path,
+        default=PROJECT_ROOT / "experiments" / "results" / "exp5_run_all",
+        help="Directory for reusable timing and difficulty artifacts",
+    )
+    run_all_parser.add_argument("--attempts", type=int, default=30)
+    run_all_parser.add_argument("--cpu-limit", type=int, default=16)
+    run_all_parser.add_argument("--verification-runs", type=int, default=1000)
+    run_all_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=PROJECT_ROOT / "experiments" / "results" / "exp5_final_2026_08_12",
+        help="New directory for the final campaign outputs",
+    )
+    run_all_parser.add_argument(
+        "--artifacts-dir", type=Path, default=PROJECT_ROOT / "model"
+    )
 
     plot = subparsers.add_parser("plot", help="Regenerate heatmaps from a summary CSV")
     plot.add_argument("--summary", type=Path, required=True)
@@ -1285,6 +1594,7 @@ def main() -> None:
             output_path=args.output,
             artifacts_dir=args.artifacts_dir,
             cpu_limit=args.cpu_limit,
+            resume=args.resume,
         )
     elif args.command == "calibrate-difficulty":
         calibrate_difficulties(
@@ -1301,6 +1611,15 @@ def main() -> None:
             seed_manifest_path=args.seed_manifest,
             artifacts_dir=args.artifacts_dir,
             output_dir=args.output_dir,
+        )
+    elif args.command == "run-all":
+        run_all(
+            work_dir=args.work_dir,
+            artifacts_dir=args.artifacts_dir,
+            attempts=args.attempts,
+            cpu_limit=args.cpu_limit,
+            verification_runs=args.verification_runs,
+            final_output_dir=args.output_dir,
         )
     elif args.command == "plot":
         generate_heatmaps(args.summary, args.output_dir)

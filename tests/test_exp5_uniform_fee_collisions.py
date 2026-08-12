@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -15,6 +16,7 @@ from experiments.exp5_uniform_fee_collisions import (
     derive_seed,
     simulate_race,
     _validate_final_seed_manifest,
+    _run_timing_attempt,
 )
 
 
@@ -105,3 +107,25 @@ def test_checked_in_manifest_freezes_all_final_seeds():
     manifest = json.loads(manifest_path.read_text())
 
     _validate_final_seed_manifest(manifest)
+
+
+def test_interruptible_timing_attempt_returns_child_result(monkeypatch):
+    import experiments.exp5_uniform_fee_collisions as experiment
+
+    def fake_worker(conditioning, noise, artifacts_dir, input_shape, result_queue):
+        del conditioning, noise, artifacts_dir, input_shape
+        time.sleep(0.01)
+        result_queue.put(("ok", 0.25))
+
+    monkeypatch.setattr(experiment, "_timing_attempt_worker", fake_worker)
+
+    duration, error = _run_timing_attempt(
+        attempt_number=1,
+        total_attempts=1,
+        conditioning=[0.0] * 64,
+        noise=[0.0] * 64,
+        artifacts_dir=PROJECT_ROOT / "model",
+    )
+
+    assert duration == 0.25
+    assert error is None
