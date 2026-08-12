@@ -1,7 +1,8 @@
 # Running the Experiments
 
 This guide covers every step needed to reproduce the PoML vs. PoW simulator
-experiments (Exp 1–2) and the Stable Diffusion appendix experiments (Exp 3–4).
+experiments (Exp 1–2), the Stable Diffusion appendix experiments (Exp 3–4),
+and the uniform-fee collision experiment (Exp 5).
 For a description of what each experiment measures, see
 [experiments/README.md](../experiments/README.md).
 
@@ -94,6 +95,147 @@ Each CSV row contains `completed_proofs`, `included_proofs`, `wasted_proofs`,
 
 ---
 
+## Experiment 5 — Uniform-Fee Query Collisions
+
+Experiment 5 measures duplicate completed inference-proof work in one-block
+races over a fixed pool of equivalent, uniform-fee queries. The final grid is:
+
+| Parameter | Values |
+|------|---------|
+| Miner count $M$ | 10, 100, 1000 |
+| Target block time $\tau$ | 300, 600, 900 seconds |
+| Query-pool size $Q$ | 1000, 5000, 10000 |
+| Final replicates | 1000 per configuration (27,000 races) |
+
+Running 1000 concurrent real EZKL workers is not feasible on the reference
+host. Instead, the experiment first measures 30 isolated real
+inference-plus-proof durations, then samples those empirical durations with
+replacement in an accelerated discrete-event simulation. One simulated miner
+therefore represents one independently provisioned, homogeneous node with the
+same isolated resource allocation; it does not model 1000 miners contending
+for one 16-core host.
+
+Each miner consumes an independently and uniformly shuffled permutation of
+query IDs $0,\ldots,Q-1$. A query appears at most once in one miner's prefix but
+may be completed by many miners. Query identity cannot affect cost: all work
+uses the fixed timing-calibration input and duration draws are independent of
+query ID. Every query has fee 1 and one output. Account registration, fee
+reservation, and fee debit are outside this accelerated experiment; presence
+in the initialized pool defines eligibility.
+
+### Event and metric semantics
+
+Events are ordered by virtual completion time, then a run-seeded random tie
+key, then insertion sequence. The first winning completion is immediately
+adopted by the coordinator; post-adoption network propagation is irrelevant to
+this one-block boundary. A completion at the same virtual time but ordered
+after adoption is cancelled, has zero remaining time, and is not included in
+the denominator. This preserves coordinator-emitted order without adding a
+latency or consensus tie-breaking model.
+
+For each adopted run:
+
+$$
+	ext{collision ratio}
+=\frac{\sum_q \max(0, c_q-1)}{\sum_q c_q}
+=\frac{\text{completed pairs}-\text{unique completed queries}}
+{\text{completed pairs}},
+$$
+
+where $c_q$ counts full inference-plus-proof completions before adoption. The
+winning pair is included. Every started but unfinished combined attempt is one
+discarded partial; detailed records include elapsed and remaining virtual
+time. An attempt scheduled at exactly the adoption time but ordered after the
+adoption event is retained as `adoption_preceded_tied_event`; it has zero
+remaining time and is reported separately, not counted as a partially
+completed proof. A run where all miners exhaust their permutations without a
+winner is recorded as failed, excluded from the mean ratio, never assigned a
+replacement seed, and causes the final campaign command to exit nonzero.
+
+### 1. Smoke test
+
+The smoke command uses an explicitly synthetic timing fixture and cannot
+produce final results:
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py smoke \
+    --output-dir experiments/results/exp5_smoke
+```
+
+### 2. Measure real EZKL attempt times
+
+Run from a clean committed checkout. The command pins the process to 16 logical
+CPUs, fixes Rayon/BLAS thread limits, uses one fixed valid input, records 30
+successful full inference-plus-proof durations, and retains failures and host
+metadata. It does not discard successful outliers.
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py calibrate-timings \
+    --attempts 30 \
+    --cpu-limit 16 \
+    --output experiments/results/exp5_timing_calibration.json
+```
+
+### 3. Calibrate fixed difficulties
+
+For each $(M,\tau)$ pair, the threshold is calculated from the empirical
+arithmetic mean $E[T]$:
+
+$$
+D=\left\lfloor 2^{256}\frac{E[T]}{M\tau}\right\rfloor.
+$$
+
+The command runs 1000 disjoint-seed verification races per pair and reports
+realized adoption-time statistics and 95% normal confidence intervals. It
+never retunes the threshold and never uses collision outcomes for calibration.
+The same fixed difficulty is reused across all three $Q$ values for a given
+$(M,\tau)$ pair.
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py calibrate-difficulty \
+    --timings experiments/results/exp5_timing_calibration.json \
+    --verification-runs 1000 \
+    --output experiments/results/exp5_difficulty_calibration.json
+```
+
+### 4. Run the frozen final campaign
+
+The committed `experiments/exp5_seed_manifest.json` fixes separate public seed
+roots for smoke, pilot, timing, difficulty calibration, and final runs. Each
+random stream is domain-separated for query ordering, duration draws, lottery
+draws, and equal-time ordering. Final seeds are SHA-256-derived from the frozen
+root and $(M,\tau,Q,\text{replicate})$; all 27,000 derived seeds are unique.
+
+```bash
+python experiments/exp5_uniform_fee_collisions.py run-final \
+    --timings experiments/results/exp5_timing_calibration.json \
+    --calibration experiments/results/exp5_difficulty_calibration.json \
+    --output-dir experiments/results/exp5_final_2026_08_12
+```
+
+Final collection requires timing and difficulty artifacts from the same clean
+simulator commit and identical model/proof artifact digests. It refuses to
+overwrite a non-empty campaign directory. Virtual races are deterministic;
+remaining nondeterminism is confined to the real wall-clock timing calibration
+and is recorded in that artifact.
+
+**Outputs**
+
+| File | Contents |
+|------|----------|
+| `campaign.json` | Commit, complete configuration map, environment, model/proof digests, seed and calibration provenance |
+| `runs.csv` | All 27,000 run IDs, seeds, adoption times, collision metrics, partial-work metrics, and winners |
+| `summary.csv` | One row per configuration; heatmaps use the arithmetic mean of adopted run ratios; pooled ratios, variation, and tied-cancellation counts are also retained |
+| `details/<config_id>/runs.json` | Ordered per-miner completed query lists and full run records for frozen replicates 0–4 |
+| `details/<config_id>/attempts.csv` | Every completed and cancelled attempt for frozen replicates 0–4 |
+| `figures/collision_heatmap_target_{300,600,900}s.{png,pdf}` | Three separate annotated heatmaps using one shared 0-to-global-maximum color scale |
+
+Full attempt-level and per-miner-list records are deliberately retained only
+for the first five of 1000 replicates per configuration. This is the selected
+storage policy; aggregate run records are retained for every replicate.
+
+---
+
 ## Appendix Experiments — Stable Diffusion CIA Validation (Exp 3 & 4)
 
 These experiments empirically validate the Computational Independence of
@@ -148,6 +290,11 @@ scripts/setup_model.sh
 scripts/download_sd_model.py
 ├── experiments/exp3_sd_activation_divergence.py
 └── experiments/exp4_sd_inference_timing.py
+
+experiments/exp5_uniform_fee_collisions.py
+├── calibrate-timings
+├── calibrate-difficulty
+└── run-final
 ```
 
 Exp 1 and Exp 2 are independent of the SD experiments and can be run in

@@ -99,7 +99,7 @@ diffusion_steps: 1
 
 See [docs/experiments.md](docs/experiments.md) for a step-by-step guide to
 running all experiments (PoML vs. PoW simulator, Stable Diffusion CIA
-validation) and interpreting their outputs.
+validation, and uniform-fee query collisions) and interpreting their outputs.
 
 ## Tests
 

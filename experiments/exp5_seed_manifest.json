@@ -1,0 +1,33 @@
+{
+  "version": "exp5-seeds-v1",
+  "derivation": {
+    "algorithm": "SHA-256",
+    "encoding": "UTF-8",
+    "material": "NUL-separated decimal/string fields: root, namespace, then ordered parts",
+    "result": "first 8 digest bytes interpreted as an unsigned big-endian 64-bit integer"
+  },
+  "seed_roots": {
+    "timing_calibration": "poml-exp5-timing-calibration-v1",
+    "smoke": "poml-exp5-smoke-v1",
+    "pilot": "poml-exp5-pilot-v1",
+    "difficulty_calibration": "poml-exp5-difficulty-calibration-v1",
+    "final": "poml-exp5-final-frozen-2026-08-12-v1"
+  },
+  "grid": {
+    "miners": [10, 100, 1000],
+    "target_block_time_s": [300, 600, 900],
+    "query_pool_size": [1000, 5000, 10000]
+  },
+  "uniform_fee": 1,
+  "final_replicates_per_config": 1000,
+  "detailed_replicates_per_config": 5,
+  "final_seed_namespace": "final-run",
+  "final_seed_parts": [
+    "miners",
+    "target_block_time_s",
+    "query_pool_size",
+    "zero_based_replicate"
+  ],
+  "frozen_before_final_outcomes": true,
+  "note": "Final seeds must not be replaced after a no-winner run; such a run is recorded as failed and excluded from the collision-ratio mean."
+}

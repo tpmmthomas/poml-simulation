@@ -16,6 +16,8 @@ PoML lottery.
 | [pow_calibrate.py](pow_calibrate.py) | Benchmarks local SHA-256 hashrate, writes a difficulty target for a chosen expected block time |
 | [exp1_block_time_stability.py](exp1_block_time_stability.py) | 50-block PoML and PoW runs at 300 s target; emits mean/min/max/stdev/variance |
 | [exp2_wasted_work.py](exp2_wasted_work.py) | PoML sweeps over expected block time (200/300/400 s) and miner count (2/4/8), 10 blocks each |
+| [exp5_uniform_fee_collisions.py](exp5_uniform_fee_collisions.py) | One-block uniform-fee collision experiment using real EZKL timing calibration and accelerated discrete-event races |
+| [exp5_seed_manifest.json](exp5_seed_manifest.json) | Frozen, domain-separated seed roots and the 27-configuration Exp 5 grid |
 | `results/` | CSVs and per-run logs (gitignored) |
 
 ### Appendix experiments (Stable Diffusion empirical validation)
@@ -74,6 +76,9 @@ python experiments/exp1_block_time_stability.py --blocks 50 --target 300
 
 # 3. Experiment 2: block-time sweep + miner-count sweep, 10 blocks each (~5 h)
 python experiments/exp2_wasted_work.py --blocks 10
+
+# 4. Experiment 5: see docs/experiments.md for calibration and final-run commands
+python experiments/exp5_uniform_fee_collisions.py smoke
 ```
 
 ### Appendix SD experiments
@@ -97,6 +102,8 @@ python experiments/exp4_sd_inference_timing.py
 - `results/exp2_blocktime_sweep.csv`, `results/exp2_miner_sweep.csv` — one row per config
   with `completed_proofs`, `included_proofs`, `wasted_proofs`, `wasted_ratio`, and
   mean block time.
+- `results/exp5_<campaign>/` — Exp 5 campaign provenance, 27,000 run summaries,
+  27 configuration summaries, first-five detailed records, and three heatmaps.
 - `results/logs/exp1_poml_*.log`, `results/logs/exp2_*.log` — the full PoML run
   log for each configuration (used by the driver to count completed proofs).
 
