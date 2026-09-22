@@ -1,10 +1,23 @@
 # PoML-Sim
 
-An implementation of **Proof of ML Inference
-(PoML)**. It includes a runnable protocol simulator, the liveness and wasted-work
-experiments.
+Standalone Python implementation of the **Proof-of-ML-Inference (PoML)**
+consensus protocol described in the companion paper. The repository contains a
+protocol simulator, verified model-proof backends, and the experiments used to
+study liveness, wasted work, DDPM compatibility, LLM compatibility, and the
+GPT-2/DeepProve complexity function.
 
-Use Python 3.11+ on Linux. Start with the lightweight protocol demonstration:
+The implementation follows the paper's protocol vocabulary. It is a teaching
+and evaluation system, not a production blockchain: the model proofs are real,
+but the complete private PoML relation is checked by a trusted host.
+
+## Prerequisites
+
+- Python 3.11 or newer on Linux.
+- CUDA for the GPT-2/DeepProve backend and the larger model experiments.
+- Extra model and prover dependencies only for the backend or experiment being
+  run.
+
+## Install and run a first check
 
 ```bash
 python -m venv .venv
@@ -14,24 +27,31 @@ poml-sim --backend smoke --blocks 3 --output experiments/results/demo
 pytest -q
 ```
 
-`smoke` is an explicit deterministic test : it runs neither ML nor ZK.
-For real inference and verified model proofs, choose `gpt2` or `diffusion` below.
-Start reading [the protocol implementation](src/poml_sim/system.py).
+`smoke` is an explicit deterministic test double. It exercises the protocol
+without running ML inference or a zero-knowledge proof. Use `gpt2` or
+`diffusion` for a real inference–proof pair.
+
+## Repository map
 
 | Directory | Purpose / entry point |
 | --- | --- |
-| `src/poml_sim/` | Protocol, backends, accounting and analysis; `system.py` |
-| `tests/` | Protocol rejection tests, model math, fitting and command checks; `test_system.py` |
-| `experiments/` | The two main experiments and appendix experiments; [run guide](docs/experiments.md) |
-| `scripts/` | Pinned prover preparation and model downloads; `prepare_deepprove_protocol.py` |
-| `model/` | Tiny U-Net definition and EZKL setup; `tiny_unet.py` |
-| `docs/` | Publication scope, experiment methods and verification; `README.md` |
+| `src/poml_sim/` | Protocol, model backends, accounting, and analysis; start with `system.py` |
+| `tests/` | Protocol, model, fitting, and command tests |
+| `experiments/` | The paper's experiments; start with `README.md` |
+| `scripts/` | Prover preparation, model downloads, and EZKL setup |
+| `model/` | Tiny U-Net definition and EZKL export code |
+| `docs/` | Experiment methods and verification records |
 
+Downloaded models, prover checkouts, proofs, measurements, and figures belong
+in the ignored `models/`, `.scratch/`, and `experiments/results/` directories.
 
-## Choose a real simulator backend
+## Run the simulator
 
-**Tiny U-Net / EZKL (CPU).** This runs PoML with a small diffusion model with
-one 8×8 denoising-network pass, and a genuine EZKL proof and verification.
+### Tiny U-Net with EZKL
+
+This backend uses a fixed-shape 8×8 denoising network and a genuine EZKL proof
+and verification. It is the small diffusion instantiation used for protocol
+checks; it is not Stable Diffusion.
 
 ```bash
 pip install -e '.[ezkl]'
@@ -42,12 +62,14 @@ poml-sim --backend diffusion --artifacts experiments/results/ezkl-setup \
   --output experiments/results/diffusion-demo
 ```
 
-That difficulty is `2^256`: every completed pair wins, making this a bounded
-integration check. Setup downloads an SRS and produces about 9 GiB of proving
-key data with the tested EZKL version. Setup and proofs take minutes, depending
-on hardware. 
+The difficulty is `2^256`, so every completed pair wins. Setup downloads an
+SRS and creates about 9 GiB of proving-key data; setup and proving take minutes
+on the tested hardware.
 
-**GPT-2 / DeepProve (CUDA).**  This runs PoML with GPT-2 small and the DeepProve proving scheme. Acces to CUDA gpu is assumed.
+### GPT-2 with DeepProve
+
+This backend uses GPT-2 small and the pinned DeepProve worker. It requires CUDA,
+Rust, and the pinned nightly toolchain.
 
 ```bash
 pip install -e '.[deepprove,experiments]'
@@ -59,58 +81,48 @@ poml-sim --backend gpt2 --device cuda:0 --miners 1 --queries 2 --blocks 1 \
   --output experiments/results/gpt2-demo
 ```
 
-The preparer clones DeepProve into `.scratch/`, applies our protocol-specific changes, then
-builds `poml-prover`. The first run downloads
-GPT-2 and builds its setup. In this demo code, prompts must tokenize to 2–63 tokens; the
-prompt plus generated output has a max context limit of 64-tokens, but can be made larger if the setup is changed accordingly. Use `--prompts` for a
-newline-separated prompt file. The default α is 0.05, temperature 1, top-k 50,
-top-p 0.95, with EOS or affordable output-cap termination.
+The preparer builds the pinned worker in `.scratch/`. The first run downloads
+GPT-2 and creates its setup. Prompts must tokenize to 2–63 tokens and the
+prompt plus output must fit the 64-token setup. The default embedding-noise
+scale is `alpha = 0.05`; decoding uses temperature 1, top-k 50, and top-p 0.95.
+
+## Experiments
+
+Read [the experiment guide](docs/experiments.md) for the paper's order,
+commands, defaults, and metric definitions. The guide begins with fresh
+inference–proof measurements and then introduces the following experiments:
+
+- **PoML Liveness and Block Generation Stability**
+- **Wasted Work Analysis**
+- **DDPM Compatibility: Formal Statements and Experiments**
+- **LLM Compatibility: Formal Statements and Experiments**
+- **A Reference Complexity Function for GPT-2 and DeepProve**
+- **Additional Wasted-Work Results**, produced as part of Wasted Work Analysis
+
+Smoke runs check wiring and semantics. They do not reproduce the paper's
+reported means, standard deviations, or numerical tables.
+
+## Tests
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
+  PYTHONPATH=src .venv/bin/python -m pytest -q
+uvx --from ruff==0.15.6 ruff check src tests experiments scripts model
+uvx --from ruff==0.15.6 ruff format --check src tests experiments scripts model
+```
 
 ## What is implemented, and what is abstracted?
 
-| Paper mechanism | Implementation and limit |
+| Paper implementation | Our implementation |
 | --- | --- |
-| Query admission | Signed `(user, taskID)` query IDs, input commitments, expiry, maximum fee, parent-state balances and off-chain inputs |
-| Mining | Frozen transaction lists, parent/transaction binding, previous-proof chaining, indexed inference randomness and separate encryption randomness |
-| Lottery | **One SHA-256 hash** of the frozen binding and complete ciphertext prefix, tested against `floor(2^256 × [1 − (1 − D/2^256)^C])`; no enumeration of C hashes |
-| Ledger | Registrations activate in subsequent blocks; duplicate settlement is rejected; burn/solve/include fees; no block reward; longest valid chain with first-received ties |
-| Losing work | Completed losing responses can be settled in a later block's frozen transaction list |
-| Full PoML NP relation | **Abstracted by trusted-host receipts.** Real model proofs do not jointly prove query commitment, VRFs, complexity, encryption and all PoML conditions inside one private circuit |
-| Cryptography | Real Ed25519 signatures and X25519/HKDF/AES-GCM encryption; experimental sign-then-hash VRF and SHA-256 commitment stand-ins. Reproducible experiment keys, host-visible witnesses and DeepProve public logits mean **no protocol privacy/security claim** |
-| GPT-2 | Real quantized DeepProve inference/proofs; host/composite verification of sampling. Float32 appendix evaluation is a separate experiment. Published reference operation counts omit added noise/sampling graph work |
-| Diffusion | Real EZKL proof of one tiny random-weight U-Net pass, synthetic conditioning and `C=1`. Full SD v1-4 with 50 DDPM steps appears **only in the appendix compatibility experiment** |
-| Distribution and timing | Independent virtual miners, zero network delay, serialized physical prover calls; measured inference/proof service time excludes setup and verification. Physically computed canceled jobs are reported separately. No peer network or Byzantine attack simulation |
-| Large experiments | Measured `(time, C)` replay is explicit and does not create new proofs. Liveness also offers fresh proofs and an actual double-SHA-256 baseline; a Poisson baseline is optional |
-
-Genesis funds demo users; difficulty and fee rates are fixed for a run. The
-full validator supports forks, but the default honest zero-delay driver does
-not produce them. See [the audit](docs/features/publication.md) for exact scope.
-
-## Paper experiments and appendix
-
-[The experiment guide](docs/experiments.md) gives full commands and reduced runs:
-
-- Fresh timing bank → liveness (four miners, 256 queries, 50 blocks, 300 s target).
-- Wasted completed work: first completion per query is useful, including work
-  from losing miners; `M=10…10,000`, `Q=20…100,000`, 100 repeats at 300/600/900 s.
-- Stable Diffusion v1-4 compatibility: 1,000 inputs, 50 **DDPM** steps, shared
-  reverse-step noise for perturbations and an independent-noise baseline.
-- GPT-2 compatibility: four utility tasks and six independent-decoding
-  activation tasks, relative Gaussian embedding noise, saved token manifests.
-- Instrumented operation counts and nonnegative runtime fitting with nested
-  prompt-grouped validation. **Uniform operation weights are the default.**
-
-The full campaigns are intentionally expensive. Smoke results and the
-[verification record](docs/verification.md) do not establish the paper's reported
-means, standard deviations or numerical tables.
-
-## License and upstream components
-
-Original PoML-Sim code is [MIT licensed](LICENSE). Third-party code, model weights,
-datasets and upstream code represented in patch context retain their own terms;
-MIT does not relicense them. In particular, use the license files at the pinned
-[DeepProve revision](https://github.com/Lagrange-Labs/deep-prove/blob/9d1a53e2ef49ffa2c902b8689cd3c58057a4e662/LICENSE)
-and [dp-crypto revision](https://github.com/Lagrange-Labs/dp-crypto/blob/22e8e93cd0f94a7638616a1ae22190feb0a6b275/LICENSE),
-not just their Cargo metadata. Also see [EZKL](https://github.com/zkonduit/ezkl),
-[GPT-2](https://huggingface.co/openai-community/gpt2) and
-[Stable Diffusion v1-4](https://huggingface.co/CompVis/stable-diffusion-v1-4).
+| **Query submission.** A signed query contains `qid`, `taskID`, an input commitment, an expiry height, and a maximum fee. | `PoMLSystem.submit_query` creates and validates the same fields; raw inputs remain off-chain and are checked against the commitment. |
+| **Miner registration.** Each miner registers an identity key, an inference VRF key, and an encryption VRF key. | `MinerKeys` holds three domain-separated Ed25519 keys and `Registration` activates their signed public-key triple in the ledger. |
+| **Inference randomness.** An unbiasable VRF derives the ordered randomness collection `R` for each query. | A deterministic sign-then-hash Ed25519 VRF substitute derives and verifies each indexed value; it is not the paper's formally unbiasable VRF. |
+| **PoML proof relation.** A NIZK proves model inference, the input commitment, complexity, encryption randomness, and ciphertext construction. | The model backend produces a genuine EZKL or DeepProve model proof. A trusted host composes the remaining checks into a receipt; no detached node can verify the complete private relation. |
+| **Block production.** Transactions are frozen first; the first seed uses `G(s, tx)`, later seeds use `H(π)`; a miner appends inference–proof pairs until it wins. | The simulator follows this order, checks the three key roles, verifies both VRF transcripts, and binds every pair to the preceding proof. |
+| **Lottery.** A complexity-`C` pair wins with `tau_D(C) = 1 - (1 - D/2^256)^C`. | One SHA-256 hash of `G(s, tx)` and the complete ciphertext prefix is compared with the exact integer threshold `D_C`; the simulator does not enumerate `C` hashes. |
+| **Ledger and fees.** Valid blocks settle query fees as burn, solve, and include components; completed losing responses may be submitted later. | Account balances, expiries, duplicate-settlement checks, response transactions, longest-chain adoption, and first-received ties are implemented. There is no block reward. |
+| **Model instantiations.** The paper describes stochastic denoising models and perturbed autoregressive language models. | `diffusion` proves one tiny fixed-shape U-Net pass with `C=1`; `gpt2` runs fresh GPT-2 small inference and DeepProve proofs under the 64-token setup. |
+| **Output privacy.** NIZK zero knowledge and randomized public-key encryption hide the model output from other parties. | X25519/HKDF/AES-GCM encryption is real, but the trusted host sees witnesses, VRF values, experiment keys, and public proof data. The repository makes no protocol-privacy claim. |
+| **Distributed execution.** The security argument assumes a synchronous network and independent miners. | Virtual miners are independent, but physical prover calls are serialized on one host with zero network delay; work already performed by canceled attempts is reported separately. |
+| **Paper experiments.** Results use the paper's names and definitions: liveness, wasted work, DDPM compatibility, LLM compatibility, and the GPT-2/DeepProve complexity function. | The corresponding commands live under `experiments/`; measured replay is explicit, fresh-proof runs are available, and reduced runs are labeled as verification rather than paper results. |

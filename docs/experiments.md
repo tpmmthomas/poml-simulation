@@ -1,13 +1,46 @@
-# Running the paper experiments
+# Running the Experiments
 
-Run from the repository root in the environment described in the [README](../README.md).
-Use a new output directory for every campaign. Results, models and prover setups
-are intentionally not committed. These commands implement the current paper's
-methods; rerunning them does not promise its previously reported numbers.
+Run every command from the repository root. Use a new output directory for
+each run. The commands implement the methods in the current paper; a reduced
+run checks execution and semantics but does not reproduce a reported paper
+number.
 
-## Fresh measurements
+The experiments use three quantities throughout. An **inference–proof pair**
+is one model inference together with its verified proof. `N` is the prompt
+length, `K` is the generated length, and `C_{theta,Pi}(N,K)` is the public
+complexity charged to the pair. A **target block time** is the calibration
+target used to choose the lottery difficulty; it is not a guarantee that a
+finite run will attain that mean.
 
-Build the GPT-2 worker first, then collect genuine inference/proof pairs:
+## Setup
+
+Install the base tools and experiment dependencies first:
+
+```bash
+pip install -e '.[dev,experiments]'
+```
+
+The fresh measurement and liveness experiments use GPT-2 and DeepProve:
+
+```bash
+pip install -e '.[deepprove,experiments]'
+rustup toolchain install nightly-2026-01-27
+python scripts/prepare_deepprove_protocol.py
+```
+
+The DDPM compatibility experiment uses Stable Diffusion:
+
+```bash
+pip install -e '.[diffusion,experiments]'
+python scripts/download_sd_model.py
+```
+
+## Fresh inference–proof measurements
+
+The liveness and wasted-work experiments begin with a bank of genuine GPT-2
+inference–proof pairs. The default bank uses 32 WikiText-2 prompts, two fresh
+replicates per prompt, and prompt lengths cycling through 8, 16, 24, and 32
+tokens:
 
 ```bash
 python experiments/measure_pairs.py --backend gpt2 --device cuda:0 \
@@ -15,31 +48,20 @@ python experiments/measure_pairs.py --backend gpt2 --device cuda:0 \
   --output experiments/results/measurements
 ```
 
-The default input source is WikiText-2. Prompt lengths cycle through 8, 16, 24,
-32 tokens; generated length is actual EOS/cap length, never the requested cap.
-Decoding cap is bounded by `64 - N` and the query's maximum affordable fee.
-Each replicate gets a new binding, indexed inference VRFs, inference and proof.
-Setup and verification are excluded from the recorded service duration. Setup
-is shared by the physical worker, not rebuilt for every attempt.
+Each replicate receives a new query binding, indexed inference VRF values, a
+fresh model execution, and a fresh proof. The recorded duration includes online
+inference and proving, but excludes setup and proof verification. The actual
+generated length is recorded; it is not replaced by the requested output cap.
+`completed.jsonl` is written after each pair and `measurements.json` is written
+when the bank is complete. Synthetic smoke durations must not be called
+measurements.
 
-`completed.jsonl` is appended after each verified pair; `measurements.json` is
-written only after the bank completes. It records the model/setup identity,
-actual N/K, prompt digest, proof digest, freshness flags, duration and C. GPT-2
-also keeps proof artifacts. Do not label synthetic durations as measurements.
-For EZKL use `--backend diffusion --artifacts <setup-directory>`; fixed-shape
-pairs have `C=1` and cannot calibrate the GPT-2 operation-weight fit.
+## PoML Liveness and Block Generation Stability
 
-The paper runs on one host; contention, prover versions and hardware affect
-timings. Record the host and competing workloads for a numerical campaign.
-
-## Liveness and block-generation stability
-
-Default dimensions: 4 miners, pool 256, 50 blocks, calibration target 300 seconds.
-Difficulty is estimated as `D/2^256 = sum(T) / (M × target × sum(C))`. This is a
-rare-success calibration approximation; the report always retains actual
-observed intervals. It does not force the resulting mean to equal the target.
-
-Measured replay (the default execution mode) plus actual CPU hashing:
+This experiment uses four miners, a pool of 256 queries, 50 blocks, and a
+300-second target. The default mode replays measured `(T,C)` pairs, where `T` is
+the recorded inference–proof time and `C` is its complexity. It samples the
+pair jointly, so time and complexity from one measurement are never separated:
 
 ```bash
 python experiments/liveness.py \
@@ -47,16 +69,18 @@ python experiments/liveness.py \
   --output experiments/results/liveness
 ```
 
-This resamples **joint** `(T,C)` pairs from the bank, applies the exact rounded
-complexity threshold to an independent 256-bit draw, and schedules uniform
-query permutations. The replay does not re-prove a virtual miner's challenge.
-Pools replenish as needed for liveness; the fixed-pool waste experiment below
-does not replenish. The actual PoW baseline calibrates multiple CPU processes
-and performs double-SHA-256 over parent-bound 80-byte headers. It is a
-Bitcoin-style hash lottery, not Bitcoin transaction/network consensus. Fifty
-blocks at a 300-second target take hours of actual hashing.
+The replay does not create new proofs. It draws an independent 256-bit lottery
+value, applies the exact rounded complexity threshold, and lets each virtual
+miner process a uniformly shuffled query pool. Query demand is replenished
+between blocks.
 
-To run the full protocol with **fresh model proofs on every attempt**:
+The same command also produces a Bitcoin-style double-SHA-256 baseline. This
+is a hash lottery, not a simulation of Bitcoin's transaction or network
+protocol. To use the statistical control instead of actual hashing, add
+`--pow-mode poisson`.
+
+To execute fresh model proofs during the virtual race, use a matching GPT-2
+measurement bank and setup:
 
 ```bash
 python experiments/liveness.py --execution fresh --backend gpt2 --device cuda:0 \
@@ -65,27 +89,36 @@ python experiments/liveness.py --execution fresh --backend gpt2 --device cuda:0 
   --max-output 32 --output experiments/results/liveness-fresh
 ```
 
-Calibration and fresh execution must have the same backend/model/schedule
-identity. The full simulator checks signed queries, proof/seed chaining,
-ciphertext lotteries and fee settlement. Physical proving is serialized and
-virtual miners advance by measured durations; this is not four independently
-running GPU processes. Physical work performed for virtually canceled attempts
-is reported separately. Verification and network latency are not virtual service
-time. Fresh mode replenishes the pending pool between blocks.
+Fresh proving is serialized on the host. Virtual miners still advance by their
+measured service durations, while physical work already performed by canceled
+attempts is reported separately. Setup, verification, signatures, encryption,
+and network delay are not part of the virtual service time.
 
-For a quick plotting and event-loop check:
+For a quick event-loop check:
 
 ```bash
 python experiments/liveness.py --smoke --blocks 3 --pow-mode poisson \
   --output experiments/results/liveness-smoke
 ```
 
-`--pow-mode poisson` is explicitly a statistical exponential baseline; it does
-not hash. Outputs include block intervals, cancellation/exhaustion status,
-mean/sample SD, the timing samples, an OLS complexity/time fit and a PDF figure.
-The OLS line is a descriptive fit on those samples, not held-out validation.
+## Wasted Work Analysis
 
-## Wasted completed work
+This experiment asks how much completed inference–proof work is duplicated
+before the first winning completion. Each miner samples a query permutation
+without replacement from a fixed pool. Measured `(T,C)` pairs are pooled and
+resampled jointly; no new model inference, proof, or ciphertext is created by
+the replay.
+
+The default grid is the one used in the paper:
+
+| Quantity | Values |
+| --- | --- |
+| Miners `M` | 10, 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000 |
+| Query pool `Q` | 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000, 20,000, 50,000, 100,000 |
+| Target block time | 300, 600, 900 seconds |
+| Repetitions | 100 per configuration |
+
+Run it with:
 
 ```bash
 python experiments/wasted_work.py \
@@ -93,104 +126,106 @@ python experiments/wasted_work.py \
   --output experiments/results/wasted-work
 ```
 
-The full default grid contains 36,000 races:
+Let `A` be all completed pairs through the first winning completion, including
+duplicates, and `F` be the first completion for each distinct query. The
+reported wasted work is
 
-- M: 10, 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000.
-- Q: 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000, 20,000, 50,000, 100,000.
-- Targets: 300, 600, 900 seconds; 100 repetitions per cell.
+```text
+W = (sum(C over A) - sum(C over F)) / sum(C over A).
+```
 
-Each miner samples without replacement from a fixed query pool. Measured
-`(T,C)` pairs are pooled and resampled jointly, independently of virtual query
-identity. This assumes homogeneous service distributions. No timings, proofs
-or fresh ciphertext hashes are generated by this replay.
-
-For all completed pairs A through the first winning completion, credit the
-**first** completion of each query, F, whether or not its miner eventually wins:
-
-`W = (sum(C over A) - sum(C over F)) / sum(C over A)`.
-
-Unfinished work is excluded. Simultaneous events have a reproducible randomized
-tie order; events after the first winner are canceled. This statistical credit
-is distinct from on-chain settlement, which can include a later response first.
-Finite pools can exhaust before any miner wins. All such runs stay in `runs.csv`;
-`cells.csv` and heatmaps report conditional adopted-race means/sample SD plus
-exhaustion counts, rather than treating exhaustion as a successful block.
-
-A reduced wiring check (the `--smoke` flag alone does not shrink the grid):
+Unfinished attempts are excluded. Runs that exhaust the finite query pool
+before a winner remain in `runs.csv`; they are not treated as successful blocks
+and are excluded from adopted-race means. `cells.csv` and the heatmaps report
+the conditional mean and sample standard deviation for adopted races.
 
 ```bash
 python experiments/wasted_work.py --smoke --miners 2,4 --queries 4,20 \
   --targets 300 --repeats 3 --output experiments/results/waste-smoke
 ```
 
-## Appendix: Stable Diffusion compatibility
+### Additional Wasted-Work Results
+
+The three target times produce the paper's additional heatmaps at 300, 600,
+and 900 seconds. They are outputs of **Wasted Work Analysis**, not a separate
+kind of experiment.
+
+## DDPM Compatibility: Formal Statements and Experiments
+
+This experiment evaluates the computational-independence intuition for Stable
+Diffusion v1-4. It records the pre-denoiser latent `x_t` at every reverse step;
+it does not claim to prove a full Stable Diffusion model inside the PoML
+protocol.
 
 ```bash
-pip install -e '.[diffusion,experiments]'
-python scripts/download_sd_model.py
 python experiments/diffusion_compatibility.py \
-  --model models/stable-diffusion/stable-diffusion-v1-4-fp16 --device cuda:0 \
-  --output experiments/results/diffusion-compatibility
+  --model models/stable-diffusion/stable-diffusion-v1-4-fp16 \
+  --device cuda:0 --output experiments/results/diffusion-compatibility
 ```
 
-Defaults are SD v1-4, 512×512 image-equivalent latents (4×64×64 = 16,384),
-50 DDPM steps, 1,000 base inputs, and perturbation σ = .001, .01, .1, .5, 1.0.
-The prompt defaults to `a photo of a cat` and is configurable. The scheduler is
-DDPM fixed-small variance with no clipping, not the checkpoint's PNDM default.
-Classifier-free guidance is 7.5; CUDA uses float16, CPU uses float32. Every
-reverse step has fresh explicit Gaussian noise except the final noiseless step.
+The defaults are 1,000 base inputs, 50 **DDPM** steps, 512-equivalent latent
+size, and perturbation scales `sigma = 0.001, 0.01, 0.1, 0.5, 1.0`. For each
+perturbation, the base and perturbed trajectories share the reverse-step noise;
+the independent baseline has independent initial and reverse-step noise. The
+outputs report per-step cosine similarity and the minimum `L_infinity` distance
+over all samples and steps.
 
-Perturbed runs share the base run's reverse-step noise, as clarified by the
-paper author. One Gaussian direction per sample is scaled across σ values.
-The independent baseline has independent initial **and reverse-step** noise.
-We record every pre-denoiser latent x_t, not U-Net internal-layer activations:
-per-step cosine mean/SD and minimum L∞ across all samples/steps. No full-model
-ZK proof is attempted, and the VAE need not decode images to measure x_t.
-
-A small real-model check adds `--samples 1 --steps 4 --size 256 --sigmas 0.001`.
-It verifies the executable path, not the appendix's numerical conclusion.
-
-## Appendix: GPT-2 compatibility
+A small executable check is:
 
 ```bash
-pip install -e '.[llm,experiments]'
+python experiments/diffusion_compatibility.py --samples 1 --steps 4 \
+  --size 256 --sigmas 0.001 --output experiments/results/diffusion-smoke
+```
+
+## LLM Compatibility: Formal Statements and Experiments
+
+The LLM experiments use the pinned GPT-2 small checkpoint in float32 evaluation
+mode. Only original prompt embeddings receive independent Gaussian noise. The
+noise scale is `sigma_abs = alpha * s_E`, where `s_E` is the population standard
+deviation of the frozen token-embedding table. Generated-token embeddings stay
+clean.
+
+### Preservation of benchmark utility
+
+Run the utility experiment on WikiText-2, HellaSwag, PIQA, and ARC-Easy:
+
+```bash
 python experiments/gpt2_compatibility.py utility --device cuda:0 \
   --output experiments/results/gpt2-utility
+```
+
+The defaults use 100 examples per task, one clean baseline, three noisy
+replicates, and `alpha = 0.05, 0.1, 0.2, 0.4`. WikiText-2 is scored by
+teacher-forced perplexity. The other tasks use minimum summed continuation
+negative log-likelihood. Accuracy is stored as a fraction in JSON.
+
+### Computational independence of LLMs
+
+Run the trace experiment as follows:
+
+```bash
 python experiments/gpt2_compatibility.py trace --device cuda:0 \
   --output experiments/results/gpt2-trace
 ```
 
-Both use the pinned GPT-2 small checkpoint, float32/evaluation/eager attention,
-and population standard deviation s_E of the full token embedding table.
-Only original prompt embeddings receive independent Gaussian rows with
-σ_abs = α s_E; generated-token embeddings remain clean. α defaults to
-.05, .1, .2, .4. Gaussian values are not clipped or rounded in this experiment.
+It uses the same four tasks plus LAMBADA and Resisting Correction, 100 prompts
+per task, four independent challenge pairs, and prefixes `0, 1, 4, 8, 16, 32`.
+The two challenged runs decode independently at temperature 1, top-k 50, and
+top-p 0.95, stopping when either run reaches EOS. The experiment compares
+context matrices, attention and feed-forward outputs, final normalization, and
+the last-position logit vector. It records the actual number of comparisons;
+not every pair reaches every prefix.
 
-Utility: 100 examples each from WikiText-2, HellaSwag, PIQA and ARC-Easy, clean
-baseline once and three noisy repetitions. WikiText uses a 32-token context
-and up to 32 teacher-forced target tokens, pooled by target token count for
-perplexity. Multiple-choice prompts keep their last 32 tokens; the answer is
-chosen by minimum summed continuation NLL without length normalization. These
-scoring choices resolve details left unspecified by the paper; changing them
-changes the result. Accuracy in JSON is a fraction (multiply by 100 for percent).
-
-Trace: the same four tasks plus LAMBADA and Resisting Correction; 100 prompts
-per task, four independent challenge pairs, prefixes 0/1/4/8/16/32. Resisting
-Correction retains its full adversarial instruction within the 1,024-token
-context limit. Both sides **decode independently** at temperature 1, top-k 50,
-top-p .95, stopping comparisons when either side reaches EOS. This replaces
-the historical shared-clean-continuation experiment. Compare whole context
-matrices after embedding, each attention/FFN output and final normalization,
-and the last-position logit vector. Report minimum L∞ and actual comparison
-counts; do not assume every pair executes every prefix.
-
-The precise dataset IDs/splits are in `src/poml_sim/benchmark_data.py`.
-Each command saves `prompts.json`; use `--manifest <prompts.json>` to reuse exact
-tokenized examples even if upstream datasets change. Small real-model runs can
-use `--examples 1 --alphas 0.05 --replicates 1` for utility, or
+Use `--manifest prompts.json` to reuse exactly tokenized examples across runs.
+Small checks can use `--examples 1 --alphas 0.05 --replicates 1` for utility or
 `--examples 1 --alphas 0.05 --pairs 1 --steps 0,1,4` for traces.
 
-## Appendix: operation counting and runtime weights
+## A Reference Complexity Function for GPT-2 and DeepProve
+
+The complexity function makes the cost of an inference–proof pair public. It
+uses `S=N+K`, attention work `U`, cache work `R`, the GPT-2 reduction term
+`D(S)`, and a padded-length proof vector `B_P`, where
+`P = 2^ceil(log2(S))`. The default weights are uniform.
 
 The offline calculator needs no model or GPU:
 
@@ -199,34 +234,22 @@ python experiments/complexity_counts.py --calculate 16:8
 python experiments/complexity_counts.py --plan-only
 ```
 
-The plan covers **40 distinct (N,K), 24 distinct N+K lengths**, plus repeated
-fresh-token controls. To rebuild the reference ledger from real instrumented
-inference/proofs (expensive):
+The validation plan covers 40 distinct `(N,K)` pairs and 24 total lengths. To
+rebuild the ledger from instrumented DeepProve executions:
 
 ```bash
 python experiments/complexity_counts.py --prepare --cuda --device 0 \
   --output-dir experiments/results/complexity-counts
 ```
 
-The patches instrument the pinned DeepProve/dp-crypto sources. The ledger counts
-logical operations, not CPU instructions or wall time. Setup work and proof
-verification are excluded. Formula terms use S=N+K,
-`U=N²+NK+K(K+1)/2+S²`, `R=NK+K(K−1)/2`,
-`D(S)=123863808+111360S+144S²`, and a vector B_P for each power-of-two padded
-length P. The digest-checked reference matrix is shipped as package data.
+Inference counts are checked exactly. Proof-operation counts are compared with
+the declared componentwise tolerance; this is an implementation check, not a
+claim about the paper's maximum observed error. Setup and proof verification
+are excluded, and the reference schedule describes the paper's autoregressive
+graph rather than every extra noise or sampling operation in the modified
+worker.
 
-Inference and actual-array reduction counts are checked exactly; other proof
-components must be within the declared 5% componentwise validation tolerance.
-This tolerance is an implementation guard, not the manuscript's reported
-maximum observed error of 3.1088%. The schedule
-belongs to the reference autoregressive graph, **not an exact audit of the
-modified noise/sampling circuit**. `--compare-schedule` validates independent
-ledgers against a frozen matrix; `--analyze <ledger.jsonl>` requires its original
-`run.json` in the selected output directory. A reduced fresh check can use
-`--pairs 2:62 --compare-schedule src/poml_sim/data/gpt2_reference_schedule.json`;
-custom campaigns retain context-64 setup capacity.
-
-Fit nonnegative runtime weights from a completed genuine GPT-2 bank:
+Fit nonnegative runtime weights from a completed genuine measurement bank:
 
 ```bash
 python experiments/fit_complexity.py \
@@ -234,19 +257,15 @@ python experiments/fit_complexity.py \
   --output experiments/results/complexity-fit
 ```
 
-At least eight observations and four distinct prompts are required. This is a
-minimum for executable validation, not a recommended scientific sample size.
-Use varied N and actual K to identify more of the model. Nonnegative ridge
-uses four outer prompt-grouped folds and up to four inner folds to select the
-penalty; duplicates of a prompt never cross folds. Report feature rank,
-held-out errors against a fairly scaled uniform-weight baseline, and integer
-fixed-point rounding error. Correlated operation weights are not identifiable
-as individual hardware costs. The final model is fitted on the entire bank;
-its training error is not the held-out error.
+The fit uses prompt-grouped validation so duplicate prompts never cross folds.
+It reports feature rank and held-out error against the uniformly weighted
+baseline. Correlated operation weights are not individually identifiable; the
+exported weights are a calibration choice, not a new ticket count.
 
-`weights.json` contains integer weights plus the operation-schedule digest.
-Pass it to a subsequent run with `poml-sim --backend gpt2 --weights <file> ...`.
-Without it all operation weights are one. Fitted weights are frozen before
-mining; the lottery still computes one ciphertext hash. The exported rational
-`scale` is a calibration diagnostic retained for analysis, not a ticket count
-or an extra multiplier applied by the simulator.
+## Reading results
+
+Every run writes a manifest or `run.json` with its backend, model/setup digest,
+seed, and metric scope. Keep reduced checks separate from paper-scale output.
+The [verification record](verification.md) lists the checks already completed
+and the campaigns that were not rerun because they require substantial model,
+GPU, or CPU resources.
