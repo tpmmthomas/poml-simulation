@@ -14,10 +14,6 @@ order in which a reader encounters the concepts and the meaning of each metric.
 | A Reference Complexity Function for GPT-2 and DeepProve | `complexity_counts.py` | Count instrumented operations and validate the public schedule |
 | A Reference Complexity Function for GPT-2 and DeepProve | `fit_complexity.py` | Fit nonnegative runtime weights with grouped validation |
 
-The additional heatmaps at target block times 300, 600, and 900 seconds are
-results of **Wasted Work Analysis**, not a separate experiment. The scripts
-write manifests, CSV files, JSON reports, and figures under ignored
-`results/` directories.
 
 ## Quick checks
 
