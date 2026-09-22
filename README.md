@@ -1,9 +1,8 @@
 # PoML-Sim
 
-An independent, paper-aligned teaching implementation of **Proof of ML Inference
+An implementation of **Proof of ML Inference
 (PoML)**. It includes a runnable protocol simulator, the liveness and wasted-work
-experiments, and the appendix compatibility and complexity tools. It does not
-reproduce the paper's archived numerical results by construction.
+experiments.
 
 Use Python 3.11+ on Linux. Start with the lightweight protocol demonstration:
 
@@ -15,31 +14,24 @@ poml-sim --backend smoke --blocks 3 --output experiments/results/demo
 pytest -q
 ```
 
-`smoke` is an explicit deterministic test double: it runs neither ML nor ZK.
+`smoke` is an explicit deterministic test : it runs neither ML nor ZK.
 For real inference and verified model proofs, choose `gpt2` or `diffusion` below.
-Start reading [the protocol implementation](src/poml_sim/system.py), then
-[the paper mapping and abstraction audit](docs/features/publication.md).
+Start reading [the protocol implementation](src/poml_sim/system.py).
 
 | Directory | Purpose / entry point |
 | --- | --- |
 | `src/poml_sim/` | Protocol, backends, accounting and analysis; `system.py` |
 | `tests/` | Protocol rejection tests, model math, fitting and command checks; `test_system.py` |
-| `experiments/` | The two main experiments and appendix tools; [run guide](docs/experiments.md) |
+| `experiments/` | The two main experiments and appendix experiments; [run guide](docs/experiments.md) |
 | `scripts/` | Pinned prover preparation and model downloads; `prepare_deepprove_protocol.py` |
 | `model/` | Tiny U-Net definition and EZKL setup; `tiny_unet.py` |
 | `docs/` | Publication scope, experiment methods and verification; `README.md` |
 
-Add domain code under `src/poml_sim/`, matching tests under `tests/`, and runnable
-experiment commands under `experiments/`. Downloaded models, prover checkouts,
-proofs and measurements belong in ignored `models/`, `.scratch/` and
-`experiments/results/`; they are not distributed with this repository.
 
 ## Choose a real simulator backend
 
-**Tiny U-Net / EZKL (CPU).** This is the agreed diffusion teaching model:
-one 8×8 denoising-network pass, with a genuine EZKL proof and verification.
-Its 11,401 weights are deterministically initialized, not trained; it does not
-generate useful images or run Stable Diffusion.
+**Tiny U-Net / EZKL (CPU).** This runs PoML with a small diffusion model with
+one 8×8 denoising-network pass, and a genuine EZKL proof and verification.
 
 ```bash
 pip install -e '.[ezkl]'
@@ -53,12 +45,9 @@ poml-sim --backend diffusion --artifacts experiments/results/ezkl-setup \
 That difficulty is `2^256`: every completed pair wins, making this a bounded
 integration check. Setup downloads an SRS and produces about 9 GiB of proving
 key data with the tested EZKL version. Setup and proofs take minutes, depending
-on hardware. Supply a fresh setup directory; the script refuses to replace keys.
+on hardware. 
 
-**GPT-2 / DeepProve (CUDA).** Requires Rust/Cargo, the pinned
-`nightly-2026-01-27` toolchain and CUDA development tools at `/usr/local/cuda`.
-Tested on RTX A6000 GPUs; context-64 proving can require most of a 48 GiB GPU.
-Check the upstream terms linked below before using DeepProve.
+**GPT-2 / DeepProve (CUDA).**  This runs PoML with GPT-2 small and the DeepProve proving scheme. Acces to CUDA gpu is assumed.
 
 ```bash
 pip install -e '.[deepprove,experiments]'
@@ -70,21 +59,12 @@ poml-sim --backend gpt2 --device cuda:0 --miners 1 --queries 2 --blocks 1 \
   --output experiments/results/gpt2-demo
 ```
 
-The preparer clones pinned sources into `.scratch/`, applies the supplied work
-counter and protocol patches, skips unrelated upstream demo LFS assets, then
+The preparer clones DeepProve into `.scratch/`, applies our protocol-specific changes, then
 builds `poml-prover`. The first run downloads
-GPT-2 and builds its setup. Reuse that setup with
-`--setup-directory experiments/results/gpt2-demo/proofs/setup`; every inference
-and proof is still generated afresh. Prompts must tokenize to 2–63 tokens; the
-prompt plus generated output must fit the 64-token setup. Use `--prompts` for a
+GPT-2 and builds its setup. In this demo code, prompts must tokenize to 2–63 tokens; the
+prompt plus generated output has a max context limit of 64-tokens, but can be made larger if the setup is changed accordingly. Use `--prompts` for a
 newline-separated prompt file. The default α is 0.05, temperature 1, top-k 50,
 top-p 0.95, with EOS or affordable output-cap termination.
-
-Both real modes save `run.json`, including backend identity, per-execution
-measurements, block accounting and cancellation diagnostics. DeepProve also
-retains requests, model proofs and public logits. EZKL proofs are verified in
-memory; their hashes and circuit identity are recorded. Runs fail rather than
-substituting fake proofs. Choose a fresh output directory for every run.
 
 ## What is implemented, and what is abstracted?
 
