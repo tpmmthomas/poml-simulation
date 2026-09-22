@@ -9,6 +9,17 @@ Requires-Dist: onnx>=1.14
 Requires-Dist: pydantic>=2.0
 Requires-Dist: pyyaml>=6.0
 Requires-Dist: cryptography>=41.0
+Requires-Dist: diffusers
+Requires-Dist: transformers
+Requires-Dist: accelerate
+Requires-Dist: safetensors
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Requires-Dist: tqdm
+Requires-Dist: Pillow
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-timeout>=2.0; extra == "dev"
+Provides-Extra: llm
+Requires-Dist: transformers>=4.40; extra == "llm"
+Requires-Dist: datasets>=2.14; extra == "llm"

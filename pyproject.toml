@@ -32,6 +32,10 @@ dev = [
     "pytest>=7.0",
     "pytest-timeout>=2.0",
 ]
+llm = [
+    "transformers>=4.40",
+    "datasets>=2.14",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

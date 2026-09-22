@@ -1,0 +1,817 @@
+--- a/zkml/src/model/mod.rs
++++ b/zkml/src/model/mod.rs
+@@ -35,6 +35,7 @@
+ pub(crate) mod context;
+ pub mod exec_graph;
+ pub mod llm;
++pub mod poml;
+ pub(crate) mod trace;
+ pub mod transform;
+ pub use context::{ContextGraph, ModelCtx};
+--- a/zkml/src/layers/add.rs
++++ b/zkml/src/layers/add.rs
+@@ -76,6 +76,18 @@
+ }
+ 
+ impl Add<Element> {
++    /// Add public embedding noise already represented in the embedding scale.
++    /// No requantization or clipping is performed by this extra proof constraint.
++    pub(crate) fn same_scale(scale: ScalingFactor) -> Self {
++        Self {
++            quant_info: Some(AddQuantInfo {
++                left_multiplier: 1, right_multiplier: 1, right_shift: 0,
++                intermediate_bit_size: scale.bit_size() + 1, output_scaling: scale,
++            }),
++            phantom: PhantomData {},
++        }
++    }
++
+     pub(crate) fn prove_step<A, F, T, PCS>(
+         &self,
+         _node_id: NodeId,
+--- a/zkml/src/graph/graph.rs
++++ b/zkml/src/graph/graph.rs
+@@ -680,6 +680,13 @@
+             self.add_edge_raw_with_id(edge_id, new_edge)?;
+         }
+         Ok(edge_ids)
++    }
++
++    /// Remove a disconnected node after explicitly rewiring its edges.
++    pub(crate) fn remove_disconnected_node(&mut self, node: NodeId) -> anyhow::Result<Node<N,I,O>> {
++        ensure!(!self.edges.values().any(|edge| edge.source == node || edge.target == node),
++            "node must be disconnected before removal");
++        self.nodes.remove(&node).context("node not found")
+     }
+ 
+     /// Removes an edge from the graph by its ID.
+--- a/zkml/Cargo.toml
++++ b/zkml/Cargo.toml
+@@ -12,6 +12,10 @@
+ [[bin]]
+ name = "bench"
+ path = "src/bin/bench/cnn.rs"
++
++[[bin]]
++name = "poml-prover"
++path = "src/bin/poml_prover.rs"
+ 
+ [[bin]]
+ name = "bench-llm"
+@@ -100,6 +104,7 @@
+ ureq = { workspace = true }
+ utils = { path = "../utils" }
+ parking_lot = "0.12.5"
++zstd = { version = "=0.13.3" }
+ 
+ [target.'cfg(target_os = "macos")'.dependencies]
+ burn = { git = "https://github.com/tracel-ai/burn.git", rev = "c071730459a135b4d06ad0e14c8a0e5771e5ba58", default-features = false, features = [
+@@ -118,7 +123,6 @@
+ proptest = { version = "1.7.0" }
+ rand = { version = "0.9.2", features = ["std", "std_rng"] }
+ rstest = { version = "0.25.0" }
+-zstd = { version = "0.13.3" }
+ humansize = "2.1.3"
+ gguf-rs = "0.1.4"
+ 
+--- /dev/null
++++ b/zkml/src/model/poml.rs
+@@ -0,0 +1,686 @@
++//! Fresh PoML GPT-2 execution with public embedding noise and proved logits.
++//! One fixed model/setup serves requests; no inference or proof is replayed.
++use crate::{
++    Element, Shape, Tensor,
++    layers::add::Add,
++    model::{BaseRunner, HandleLifetimeRunner, Layer, Trace, llm::Driver, tensor_to_handles},
++    parser::{llm::models::gpt2::GPT2, safe::RawSafeTensors},
++    quantization::ModelMetadata,
++    verify,
++};
++use anyhow::{Context, Result, ensure};
++use ark_bn254::Bn254;
++#[cfg(not(feature = "cuda"))]
++use dp_crypto::arkyper::HyperKZG;
++#[cfg(feature = "cuda")]
++use dp_crypto::arkyper::hyperkzg_gpu::HyperKZGGpu;
++use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
++use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++use std::{
++    fs::{self, File},
++    io::{BufRead, Write},
++    path::Path,
++    time::Instant,
++};
++use tenstore::GenStore;
++
++type F = ark_bn254::Fr;
++#[cfg(feature = "cuda")]
++type Pcs = HyperKZGGpu<Bn254>;
++#[cfg(not(feature = "cuda"))]
++type Pcs = HyperKZG<Bn254>;
++
++#[derive(Clone, Serialize, Deserialize)]
++pub struct Request {
++    pub uniforms: Vec<u64>,
++    pub request_id: String,
++    pub prompt_tokens: Vec<usize>,
++    pub noise: Vec<Vec<f64>>,
++    pub max_output: usize,
++    pub mode: String,
++    pub output_directory: String,
++}
++
++#[derive(Serialize)]
++struct Response {
++    request_id: String,
++    output_tokens: Vec<usize>,
++    output_length: usize,
++    stop_reason: String,
++    inference_seconds: f64,
++    proof_seconds: f64,
++    verification_seconds: f64,
++    verified: bool,
++    proof_sha256: Option<String>,
++    proof_size_bytes: u64,
++    noise_scale: f32,
++    logits_scale: f32,
++    logits_shape: Vec<usize>,
++    context_length: usize,
++}
++
++fn embedding_std(driver: &Driver<f32>) -> Result<f64> {
++    let layer = driver
++        .model
++        .graph()
++        .node(driver.md.embeddings)
++        .and_then(|n| n.as_inner())
++        .context("missing embeddings")?;
++    let Layer::Embeddings(emb) = layer else {
++        anyhow::bail!("expected GPT-2 embeddings")
++    };
++    let handle = emb.mat.clone().tensor_variant()?;
++    let tensor = handle.tensor()?;
++    let count = tensor.data().len() as f64;
++    let mean = tensor.data().iter().map(|&x| x as f64).sum::<f64>() / count;
++    Ok((tensor
++        .data()
++        .iter()
++        .map(|&x| (x as f64 - mean).powi(2))
++        .sum::<f64>()
++        / count)
++        .sqrt())
++}
++
++fn install_noise(driver: &mut Driver<Element>, metadata: &ModelMetadata) -> Result<(f32, f32)> {
++    let embedding_scale = *metadata.layer_output_scaling_factor(driver.md.embeddings)[0];
++    let logits_scale = metadata.layer_input_scaling_factor(driver.md.argmax)[0].scale();
++    let graph = driver.model.graph_mut();
++    let old_edges: Vec<_> = graph
++        .outgoings(driver.md.embeddings)
++        .map(|(id, edge)| (*id, edge.clone()))
++        .collect();
++    let input = graph.add_input(1)?;
++    let add = graph.add_inner(Layer::Add(Add::same_scale(embedding_scale)))?;
++    for (id, edge) in old_edges {
++        graph.remove_edge(&id)?;
++        graph.add_edge(add, edge.target(), edge.ports().clone(), None)?;
++    }
++    graph.add_edge(driver.md.embeddings, add, (0, 0), None)?;
++    graph.add_edge(input, add, (0, 1), None)?;
++    // SECURITY: expose the constrained logits as the sole graph output.
++    // Sampling is checked by the composite verifier on this public statement.
++    let source = graph.incoming_feeds(driver.md.argmax)[0].source;
++    let outgoing: Vec<_> = graph
++        .outgoings(driver.md.argmax)
++        .map(|(id, e)| (*id, e.clone()))
++        .collect();
++    let incoming: Vec<_> = graph
++        .incomings(driver.md.argmax)
++        .map(|(id, _)| *id)
++        .collect();
++    for id in incoming {
++        graph.remove_edge(&id)?;
++    }
++    for (id, edge) in outgoing {
++        graph.remove_edge(&id)?;
++        graph.add_edge(source.node_id, edge.target(), (source.port, 0.into()), None)?;
++    }
++    graph.remove_disconnected_node(driver.md.argmax)?;
++    driver
++        .model
++        .set_input_shapes(vec![Shape::from(vec![1]), Shape::from(vec![1, 768])]);
++    Ok((embedding_scale.scale(), logits_scale))
++}
++
++fn noise_tensor(
++    noise: &[Vec<f64>],
++    start: usize,
++    rows: usize,
++    scale: f32,
++) -> Result<Tensor<Element>> {
++    let mut values = Vec::with_capacity(rows * 768);
++    for pos in start..start + rows {
++        for col in 0..768 {
++            let value = noise.get(pos).map_or(0.0, |row| row[col]);
++            ensure!(
++                value.is_finite() && value.abs() < 100.0,
++                "invalid embedding noise"
++            );
++            values.push((value / scale as f64).round_ties_even() as Element);
++        }
++    }
++    Tensor::new(Shape::from(vec![rows, 768]), values)
++}
++
++fn validate_request(req: &Request, context: usize, vocab: usize) -> Result<()> {
++    let n = req.prompt_tokens.len();
++    ensure!(
++        n >= 2 && req.max_output >= 1 && n + req.max_output <= context,
++        "invalid prompt/output lengths"
++    );
++    ensure!(
++        req.prompt_tokens.iter().all(|&t| t < vocab),
++        "invalid token"
++    );
++    ensure!(
++        req.noise.len() == n && req.noise.iter().all(|row| row.len() == 768),
++        "noise must be N by 768"
++    );
++    ensure!(
++        req.mode == "profile" || req.mode == "prove",
++        "mode must be profile or prove"
++    );
++    ensure!(
++        req.uniforms.len() == req.max_output && req.uniforms.iter().all(|&u| u < (1u64 << 53)),
++        "one 53-bit uniform per reserved decoding step required"
++    );
++    Ok(())
++}
++
++fn infer(
++    driver: &Driver<Element>,
++    req: &Request,
++    scale: f32,
++    logits_scale: f32,
++    decoding: &Decoding,
++) -> Result<(Vec<usize>, Vec<Element>, Trace<Element>)> {
++    driver.model.reset();
++    let n = req.prompt_tokens.len();
++    let mut sentence: Vec<Element> = req.prompt_tokens.iter().map(|&t| t as Element).collect();
++    let mut decoded = Vec::new();
++    let mut cached_logits = Vec::new();
++    let mut store = GenStore::default();
++    let mut runner =
++        HandleLifetimeRunner::new(BaseRunner::from(store.clone()), driver.model.graph());
++    let vocab = driver.md.vocab_size();
++    // The extra final cached row matches the appendix reference driver's
++    // trace-reconstruction schedule. It does not add a delivered token.
++    for step in 0..=req.max_output {
++        let tokens = if step == 0 {
++            sentence.clone()
++        } else {
++            vec![*sentence.last().unwrap()]
++        };
++        let start = if step == 0 { 0 } else { n + step - 1 };
++        let rows = tokens.len();
++        let inputs = vec![
++            Tensor::new(Shape::from(vec![rows]), tokens)?,
++            noise_tensor(&req.noise, start, rows, scale)?,
++        ];
++        let handles = tensor_to_handles(&inputs, driver.model.graph(), &mut store)?;
++        driver.model.run_with_runner(&mut runner, handles)?;
++        let outputs = runner.model_outputs(driver.model.graph())?;
++        ensure!(outputs.len() == 1, "expected proved logits");
++        let logits_handle = outputs[0].clone().tensor_variant()?;
++        let logits = logits_handle.tensor()?;
++        let width = logits.shape().dim(-1);
++        let row = (logits.shape().dim(0) - 1) * width;
++        // Complete the final cached row even after EOS, so the final full
++        // trace reuses the same attention-softmax shifts for every position.
++        if step == req.max_output
++            || decoded.last() == Some(&usize::from(driver.md.config.eos_token))
++        {
++            break;
++        }
++        let next = sample(
++            &logits.data()[row..row + vocab],
++            logits_scale,
++            req.uniforms[step],
++            decoding,
++        )?;
++        cached_logits.extend_from_slice(&logits.data()[row..row + vocab]);
++        decoded.push(next);
++        sentence.push(next as Element);
++    }
++    drop(runner);
++    driver
++        .model
++        .reset_selective(&[crate::layers::transformer::softmax::SOFTMAX_LAYER]);
++    let s = sentence.len();
++    let trace = driver.model.run(
++        vec![
++            Tensor::new(Shape::from(vec![s]), sentence.clone())?,
++            noise_tensor(&req.noise, 0, s, scale)?,
++        ],
++        &mut GenStore::default(),
++    )?;
++    let outputs = trace.outputs();
++    let logits_handle = outputs[0].clone().tensor_variant()?;
++    let logits = logits_handle.tensor()?;
++    let width = logits.shape().dim(-1);
++    for (step, &token) in decoded.iter().enumerate() {
++        let row = n - 1 + step;
++        ensure!(
++            sample(
++                &logits.data()[row * width..row * width + vocab],
++                logits_scale,
++                req.uniforms[step],
++                decoding
++            )? == token,
++            "cached/final decoding mismatch at {step}"
++        );
++        ensure!(
++            logits.data()[row * width..row * width + vocab]
++                == cached_logits[step * vocab..(step + 1) * vocab],
++            "cached/final logits mismatch at {step}"
++        );
++    }
++    drop(logits);
++    Ok((decoded, cached_logits, trace))
++}
++
++fn write_i64(path: &Path, values: &[Element]) -> Result<()> {
++    let mut file = std::io::BufWriter::new(File::create(path)?);
++    for &value in values {
++        file.write_all(&value.to_le_bytes())?;
++    }
++    file.flush()?;
++    Ok(())
++}
++
++fn digest(bytes: &[u8]) -> String {
++    format!("{:x}", Sha256::digest(bytes))
++}
++
++/// Serve requests using a fixed quantized graph and setup over newline JSON.
++pub fn serve(model: &str, max_context: usize, decoding: Decoding) -> Result<()> {
++    decoding.validate()?;
++    let raw = RawSafeTensors::from_hugging_face_cached(model)?;
++    let model_files = serde_json::json!({
++        "weights_sha256":digest(&fs::read(raw.model_path())?),
++        "config_sha256":digest(&fs::read(raw.config_path())?),
++        "tokenizer_sha256":digest(&fs::read(raw.tokenizer_path())?)});
++    let floating = Driver::load_from_model(GPT2::new(), &raw, Some(max_context))?;
++    let std = embedding_std(&floating)?;
++    let (mut driver, metadata) = floating.into_provable_llm(None)?;
++    let (noise_scale, logits_scale) = install_noise(&mut driver, &metadata)?;
++    drop(metadata);
++    let started = Instant::now();
++    let setup_directory =
++        std::env::var("POML_SETUP_DIRECTORY").context("setup directory required")?;
++    let setup_path = Path::new(&setup_directory);
++    fs::create_dir_all(setup_path)?;
++    let contract = Contract {
++        context: max_context,
++        noise_scale,
++        logits_scale,
++        decoding: decoding.clone(),
++        eos: usize::from(driver.md.config.eos_token),
++    };
++    let (prover, verifier) = if setup_path.join("prover.bin.zst").exists() {
++        let old: Contract = serde_json::from_slice(&fs::read(setup_path.join("contract.json"))?)?;
++        ensure!(
++            serde_json::to_vec(&old)? == serde_json::to_vec(&contract)?,
++            "registered model/decoder contract changed"
++        );
++        let bytes =
++            zstd::stream::decode_all(fs::read(setup_path.join("prover.bin.zst"))?.as_slice())?;
++        let (prover, _): (crate::ProverContext<'static, F, Pcs>, usize) =
++            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())?;
++        let (verifier, _): (crate::iop::context::VerifierContext<F, Pcs>, usize) =
++            bincode::serde::decode_from_slice(
++                &fs::read(setup_path.join("verifier.bin"))?,
++                bincode::config::standard(),
++            )?;
++        (prover, verifier)
++    } else {
++        let (prover, verifier) =
++            driver
++                .model
++                .generate_contexts_for_input_shapes::<F, Pcs>(vec![
++                    Shape::from(vec![max_context]),
++                    Shape::from(vec![max_context, 768]),
++                ])?;
++        // Persist the actual CRS/model commitments. Regenerating setup on restart
++        // is not a replacement for keeping one registered setup for the chain.
++        let bytes = bincode::serde::encode_to_vec(&prover, bincode::config::standard())?;
++        fs::write(
++            setup_path.join("prover.bin.zst.partial"),
++            zstd::stream::encode_all(bytes.as_slice(), 3)?,
++        )?;
++        fs::write(
++            setup_path.join("verifier.bin"),
++            bincode::serde::encode_to_vec(&verifier, bincode::config::standard())?,
++        )?;
++        fs::write(
++            setup_path.join("contract.json"),
++            serde_json::to_vec_pretty(&contract)?,
++        )?;
++        fs::rename(
++            setup_path.join("prover.bin.zst.partial"),
++            setup_path.join("prover.bin.zst"),
++        )?;
++        (prover, verifier)
++    };
++    let setup_bytes = bincode::serde::encode_to_vec(&verifier, bincode::config::standard())?;
++    let ready = serde_json::json!({"event":"ready","backend":if cfg!(feature="cuda"){"cuda"}else{"cpu"},
++        "embedding_std":std,"noise_scale":noise_scale,"logits_scale":logits_scale,
++        "setup_sha256":digest(&setup_bytes),"setup_seconds":started.elapsed().as_secs_f64(),
++        "context_limit":max_context,"model_files":model_files,"decoding":decoding,"selection_proof":"composite verifier over public logits","schema":"poml-live-proof-1"});
++    println!("{}", ready);
++    std::io::stdout().flush()?;
++    for line in std::io::stdin().lock().lines() {
++        let req: Request = serde_json::from_str(&line?)?;
++        validate_request(&req, max_context, driver.md.vocab_size())?;
++        let output = Path::new(&req.output_directory);
++        fs::create_dir_all(output)?;
++        eprintln!("POML_EVENT request={} stage=inference", req.request_id);
++        let start = Instant::now();
++        let (decoded, logits, trace) = infer(&driver, &req, noise_scale, logits_scale, &decoding)?;
++        let inference_seconds = start.elapsed().as_secs_f64();
++        let mut response = Response {
++            request_id: req.request_id.clone(),
++            output_length: decoded.len(),
++            stop_reason: if decoded.last() == Some(&usize::from(driver.md.config.eos_token)) {
++                "eos"
++            } else {
++                "length_cap"
++            }
++            .into(),
++            output_tokens: decoded,
++            inference_seconds,
++            proof_seconds: 0.0,
++            verification_seconds: 0.0,
++            verified: false,
++            proof_sha256: None,
++            proof_size_bytes: 0,
++            noise_scale,
++            logits_scale,
++            logits_shape: vec![
++                logits.len() / driver.md.vocab_size(),
++                driver.md.vocab_size(),
++            ],
++            context_length: req.prompt_tokens.len() + logits.len() / driver.md.vocab_size(),
++        };
++        if req.mode == "prove" {
++            write_i64(&output.join("logits.i64"), &logits)?;
++            let noise = noise_tensor(&req.noise, 0, req.prompt_tokens.len(), noise_scale)?;
++            write_i64(&output.join("noise.i64"), noise.data())?;
++            eprintln!("POML_EVENT request={} stage=prove", req.request_id);
++            let start = Instant::now();
++            let (proof, io) = driver.prove(&prover, trace)?;
++            response.proof_seconds = start.elapsed().as_secs_f64();
++            let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard())?;
++            response.proof_sha256 = Some(digest(&bytes));
++            response.proof_size_bytes = bytes.len() as u64;
++            fs::write(output.join("proof.bin"), &bytes)?;
++            let statement = bincode::serde::encode_to_vec(&io, bincode::config::standard())?;
++            fs::write(
++                output.join("statement.bin.zst"),
++                zstd::stream::encode_all(statement.as_slice(), 3)?,
++            )?;
++            let start = Instant::now();
++            // The public statement is checked before accepting the NN proof.
++            verify_selection(
++                &io,
++                &req,
++                noise_scale,
++                logits_scale,
++                &decoding,
++                usize::from(driver.md.config.eos_token),
++            )?;
++            verify::<F, Blake3Transcript, Pcs>(&verifier, proof, io)?;
++            response.verification_seconds = start.elapsed().as_secs_f64();
++            response.verified = true;
++        }
++        let json = serde_json::to_string(&response)?;
++        fs::write(output.join("result.json"), &json)?;
++        println!("{}", json);
++        std::io::stdout().flush()?;
++    }
++    Ok(())
++}
++
++/// Registered finite-precision inverse-CDF decoder over public integer logits.
++#[derive(Clone, Debug, Serialize, Deserialize)]
++pub struct Decoding {
++    pub temperature: f64,
++    pub top_k: usize,
++    pub top_p: f64,
++}
++impl Decoding {
++    fn validate(&self) -> Result<()> {
++        ensure!(
++            self.temperature.is_finite() && self.temperature > 0.0,
++            "invalid temperature"
++        );
++        ensure!(
++            self.top_p.is_finite() && self.top_p > 0.0 && self.top_p <= 1.0,
++            "invalid top_p"
++        );
++        Ok(())
++    }
++}
++
++fn sample(logits: &[Element], scale: f32, u: u64, decoding: &Decoding) -> Result<usize> {
++    decoding.validate()?;
++    ensure!(
++        !logits.is_empty() && u < (1u64 << 53),
++        "invalid logits or uniform"
++    );
++    let mut order: Vec<usize> = (0..logits.len()).collect();
++    // Token-id tie breaking and integer CDF intervals make selection unique.
++    order.sort_unstable_by(|&a, &b| logits[b].cmp(&logits[a]).then(a.cmp(&b)));
++    if decoding.top_k > 0 {
++        order.truncate(decoding.top_k.min(order.len()));
++    }
++    let maximum = logits[order[0]];
++    let mut weights: Vec<(usize, u64)> = order
++        .iter()
++        .map(|&i| {
++            let exponent = (logits[i] - maximum) as f64 * scale as f64 / decoding.temperature;
++            (
++                i,
++                (exponent.exp() * (1u64 << 48) as f64).round_ties_even() as u64,
++            )
++        })
++        .collect();
++    let total: u64 = weights.iter().map(|(_, w)| *w).sum();
++    let mut cumulative = 0u64;
++    let mut retained = weights.len();
++    for (i, (_, weight)) in weights.iter().enumerate() {
++        cumulative += weight;
++        if cumulative as f64 >= decoding.top_p * total as f64 {
++            retained = i + 1;
++            break;
++        }
++    }
++    weights.truncate(retained);
++    let total: u64 = weights.iter().map(|(_, w)| *w).sum();
++    let target = ((u as u128 * total as u128) >> 53) as u64;
++    let mut cumulative = 0;
++    for (token, weight) in weights {
++        cumulative += weight;
++        if target < cumulative {
++            return Ok(token);
++        }
++    }
++    anyhow::bail!("inverse CDF did not select a token")
++}
++
++// SECURITY: This is part of the composite proof verifier. It checks the actual
++// proof IO, not a separately generated text file or an unbound sampled output.
++fn verify_selection(
++    io: &crate::IO<F>,
++    req: &Request,
++    noise_scale: f32,
++    logits_scale: f32,
++    decoding: &Decoding,
++    eos: usize,
++) -> Result<()> {
++    ensure!(
++        io.input.len() == 2 && io.output.len() == 1,
++        "invalid composite IO arity"
++    );
++    let input = io.input[0].to_element();
++    let noise = io.input[1].to_element();
++    let logits = io.output[0].to_element();
++    let n = req.prompt_tokens.len();
++    let s = input.unpadded_shape().product();
++    let k = s.checked_sub(n).context("sequence shorter than prompt")?;
++    ensure!(k >= 1 && k <= req.max_output, "invalid realised K");
++    ensure!(
++        input.data()[..n]
++            .iter()
++            .map(|&x| x as usize)
++            .eq(req.prompt_tokens.iter().copied()),
++        "prompt mismatch"
++    );
++    let expected = noise_tensor(&req.noise, 0, s, noise_scale)?;
++    ensure!(
++        noise.unpadded_shape().as_ref() == expected.unpadded_shape().as_ref(),
++        "noise shape mismatch"
++    );
++    for row in 0..noise.shape().dim(0) {
++        for col in 0..noise.shape().dim(1) {
++            let value = if row < s && col < 768 {
++                expected.data()[row * 768 + col]
++            } else {
++                0
++            };
++            ensure!(
++                noise.data()[row * noise.shape().dim(1) + col] == value,
++                "noise binding/padding mismatch"
++            );
++        }
++    }
++    let vocab = logits.unpadded_shape().dim(-1);
++    let width = logits.shape().dim(-1);
++    for t in 0..k {
++        let selected = sample(
++            &logits.data()[(n - 1 + t) * width..(n - 1 + t) * width + vocab],
++            logits_scale,
++            req.uniforms[t],
++            decoding,
++        )?;
++        ensure!(
++            input.data()[n + t] as usize == selected,
++            "sampled token mismatch at {t}"
++        );
++        ensure!(t + 1 == k || selected != eos, "tokens after EOS");
++    }
++    ensure!(
++        k == req.max_output || input.data()[n + k - 1] as usize == eos,
++        "early termination without EOS"
++    );
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn inverse_cdf_uses_randomness_and_deterministic_ties() {
++        let d = Decoding {
++            temperature: 1.0,
++            top_k: 0,
++            top_p: 1.0,
++        };
++        assert_eq!(sample(&[0, 0], 1.0, 0, &d).unwrap(), 0);
++        assert_eq!(sample(&[0, 0], 1.0, 1u64 << 52, &d).unwrap(), 1);
++        assert_eq!(sample(&[0, 0], 1.0, (1u64 << 53) - 1, &d).unwrap(), 1);
++        assert!(sample(&[0, 0], 1.0, 1u64 << 53, &d).is_err());
++    }
++    #[test]
++    fn top_k_and_top_p_filter_before_sampling() {
++        let d = Decoding {
++            temperature: 1.0,
++            top_k: 1,
++            top_p: 1.0,
++        };
++        assert_eq!(sample(&[0, 1], 1.0, 0, &d).unwrap(), 1);
++        let d = Decoding {
++            temperature: 1.0,
++            top_k: 0,
++            top_p: 0.4,
++        };
++        assert_eq!(sample(&[0, 0], 1.0, (1u64 << 53) - 1, &d).unwrap(), 0);
++    }
++    #[test]
++    fn composite_verifier_rejects_wrong_token_uniform_noise_and_early_stop() {
++        use crate::quantization::ToField;
++        let d = Decoding {
++            temperature: 1.0,
++            top_k: 0,
++            top_p: 1.0,
++        };
++        let mut req = Request {
++            request_id: "test".into(),
++            prompt_tokens: vec![0, 0],
++            noise: vec![vec![0.0; 768]; 2],
++            max_output: 1,
++            uniforms: vec![0],
++            mode: "prove".into(),
++            output_directory: "unused".into(),
++        };
++        let tensor = |shape: Vec<usize>, values: Vec<Element>| {
++            Tensor::new(
++                Shape::from(shape),
++                values.iter().map(|&x| x.to_field()).collect(),
++            )
++            .unwrap()
++        };
++        let io = crate::IO::<F>::new(
++            vec![
++                tensor(vec![3], vec![0, 0, 0]),
++                tensor(vec![3, 768], vec![0; 3 * 768]),
++            ],
++            vec![tensor(vec![3, 2], vec![0; 6])],
++        );
++        assert!(verify_selection(&io, &req, 1.0, 1.0, &d, 1).is_ok());
++        req.uniforms[0] = 1u64 << 52;
++        assert!(verify_selection(&io, &req, 1.0, 1.0, &d, 1).is_err());
++        req.uniforms[0] = 0;
++        req.noise[0][0] = 1.0;
++        assert!(verify_selection(&io, &req, 1.0, 1.0, &d, 1).is_err());
++        req.noise[0][0] = 0.0;
++        req.max_output = 2;
++        req.uniforms.push(0);
++        assert!(verify_selection(&io, &req, 1.0, 1.0, &d, 1).is_err());
++        req.max_output = 1;
++        req.uniforms.pop();
++        let wrong = crate::IO::<F>::new(
++            vec![
++                tensor(vec![3], vec![0, 0, 1]),
++                tensor(vec![3, 768], vec![0; 3 * 768]),
++            ],
++            vec![tensor(vec![3, 2], vec![0; 6])],
++        );
++        assert!(verify_selection(&wrong, &req, 1.0, 1.0, &d, 1).is_err());
++    }
++}
++
++#[derive(Serialize, Deserialize)]
++struct Contract {
++    context: usize,
++    noise_scale: f32,
++    logits_scale: f32,
++    decoding: Decoding,
++    eos: usize,
++}
++
++/// Verify an archived composite proof against the trusted registered setup.
++pub fn verify_saved(setup: &Path, directory: &Path) -> Result<()> {
++    let contract: Contract = serde_json::from_slice(&fs::read(setup.join("contract.json"))?)?;
++    let req: Request = serde_json::from_slice(&fs::read(directory.join("request.json"))?)?;
++    validate_request(&req, contract.context, 50257)?;
++    let (verifier, _): (crate::iop::context::VerifierContext<F, Pcs>, usize) =
++        bincode::serde::decode_from_slice(
++            &fs::read(setup.join("verifier.bin"))?,
++            bincode::config::standard(),
++        )?;
++    let (proof, _): (crate::Proof<F, Pcs>, usize) = bincode::serde::decode_from_slice(
++        &fs::read(directory.join("proof.bin"))?,
++        bincode::config::standard(),
++    )?;
++    let (io, _): (crate::IO<F>, usize) = bincode::serde::decode_from_slice(
++        &zstd::stream::decode_all(fs::read(directory.join("statement.bin.zst"))?.as_slice())?,
++        bincode::config::standard(),
++    )?;
++    verify_selection(
++        &io,
++        &req,
++        contract.noise_scale,
++        contract.logits_scale,
++        &contract.decoding,
++        contract.eos,
++    )?;
++    verify::<F, Blake3Transcript, Pcs>(&verifier, proof, io)?;
++    println!(
++        "{}",
++        serde_json::json!({"verified":true,"selection":"inverse-CDF over proved public logits"})
++    );
++    Ok(())
++}
+--- /dev/null
++++ b/zkml/src/bin/poml_prover.rs
+@@ -0,0 +1,49 @@
++//! Persistent GPU prover for fresh PoML inference attempts.
++use clap::Parser;
++use tracing_subscriber::EnvFilter;
++#[derive(Parser)]
++struct Args {
++    #[arg(long)]
++    verify: Option<std::path::PathBuf>,
++    #[arg(long, requires = "verify")]
++    setup_directory: Option<std::path::PathBuf>,
++    #[arg(long, default_value = "openai-community/gpt2")]
++    model: String,
++    #[arg(long, default_value_t = 64)]
++    context: usize,
++    #[arg(long, default_value_t = 8)]
++    threads: usize,
++    #[arg(long, default_value_t = 1.0)]
++    temperature: f64,
++    #[arg(long, default_value_t = 50)]
++    top_k: usize,
++    #[arg(long, default_value_t = 0.95)]
++    top_p: f64,
++}
++fn main() -> anyhow::Result<()> {
++    tracing_subscriber::fmt()
++        .with_env_filter(EnvFilter::from_default_env())
++        .with_writer(std::io::stderr)
++        .init();
++    let args = Args::parse();
++    rayon::ThreadPoolBuilder::new()
++        .num_threads(args.threads)
++        .build_global()?;
++    if let Some(directory) = args.verify {
++        return zkml::model::poml::verify_saved(
++            args.setup_directory
++                .as_deref()
++                .ok_or_else(|| anyhow::anyhow!("--setup-directory required"))?,
++            &directory,
++        );
++    }
++    zkml::model::poml::serve(
++        &args.model,
++        args.context,
++        zkml::model::poml::Decoding {
++            temperature: args.temperature,
++            top_k: args.top_k,
++            top_p: args.top_p,
++        },
++    )
++}

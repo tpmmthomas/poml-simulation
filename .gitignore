@@ -20,6 +20,7 @@ model/*.pf
 # Environment
 .env
 .venv/
+/.venv
 venv/
 
 # IDE
@@ -41,6 +42,11 @@ Thumbs.db
 
 # Experiment artifacts
 experiments/results/
+/experiments/results
+.scratch/
+/.scratch
 
 # Downloaded model weights (large; fetched by scripts/download_sd_model.py)
 models/
+/models
+/model_cache

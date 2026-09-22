@@ -1,0 +1,1292 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 7b1b9da7..f3e36e6f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3509,7 +3509,6 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
+ [[package]]
+ name = "dp-crypto"
+ version = "0.1.0"
+-source = "git+https://github.com/Lagrange-Labs/dp-crypto.git?branch=feat%2Fhkzg_gpu#22e8e93cd0f94a7638616a1ae22190feb0a6b275"
+ dependencies = [
+  "anyhow",
+  "ark-bn254",
+@@ -3531,6 +3530,7 @@ dependencies = [
+  "rand_chacha 0.3.1",
+  "rayon",
+  "serde",
++ "serde_json",
+  "sumcheck_macro",
+  "syn 2.0.117",
+  "thiserror 2.0.18",
+@@ -8134,7 +8134,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+ [[package]]
+ name = "sumcheck_macro"
+ version = "0.1.0"
+-source = "git+https://github.com/Lagrange-Labs/dp-crypto.git?branch=feat%2Fhkzg_gpu#22e8e93cd0f94a7638616a1ae22190feb0a6b275"
+ dependencies = [
+  "itertools 0.14.0",
+  "proc-macro2",
+diff --git a/Cargo.toml b/Cargo.toml
+index 2f43bd87..a6228d3f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -36,7 +36,7 @@ clap = "4"
+ compact_str = "0.9"
+ csv = "1.3.1"
+ derive_more = "2.0.1"
+-dp-crypto = { git = "https://github.com/Lagrange-Labs/dp-crypto.git", branch = "feat/hkzg_gpu", features = ["parallel"] }
++dp-crypto = { path = "../dp-crypto-work/dp-crypto", features = ["parallel"] }
+ either = "1.15"
+ exponential-backoff = "2.1.0"
+ hex = { version = "0.4" }
+diff --git a/zkml/src/bin/bench/llm.rs b/zkml/src/bin/bench/llm.rs
+index 7726eee9..3f398216 100644
+--- a/zkml/src/bin/bench/llm.rs
++++ b/zkml/src/bin/bench/llm.rs
+@@ -1,19 +1,19 @@
+ use std::{fs::File, io::Write};
+ 
+-use anyhow::bail;
++use anyhow::{bail, ensure, Context};
+ use ark_bn254::Bn254;
+-use clap::{ArgGroup, Parser, ValueEnum, builder::ArgPredicate};
+-#[cfg(not(feature = "cuda"))]
+-use dp_crypto::arkyper::HyperKZG;
++use ark_std::rand::{rngs::StdRng, Rng, SeedableRng};
++use clap::{builder::ArgPredicate, ArgGroup, Parser, ValueEnum};
+ #[cfg(feature = "cuda")]
+ use dp_crypto::arkyper::hyperkzg_gpu::HyperKZGGpu;
+-use libc::{RUSAGE_SELF, getrusage, rusage};
++#[cfg(not(feature = "cuda"))]
++use dp_crypto::arkyper::HyperKZG;
++use libc::{getrusage, rusage, RUSAGE_SELF};
+ use tenstore::GenStore;
+ use timed_core::Output;
+ use tracing::{info, warn};
+ use tracing_subscriber::EnvFilter;
+ use zkml::{
+-    ProverContext,
+     measure::{self, Measure},
+     model::{
+         exec_graph::InferenceEngine,
+@@ -23,12 +23,13 @@ use zkml::{
+         file_cache,
+         gguf::RawGGUF,
+         llm::{
+-            HFTokenizer,
+             models::{gemma3::Gemma3, gpt2::GPT2, llama2::Llama2},
+             tokenizer::TokenizerLoader,
++            HFTokenizer, LLMTokenizer, Token,
+         },
+         safe::RawSafeTensors,
+     },
++    ProverContext,
+ };
+ 
+ type F = ark_bn254::Fr;
+@@ -59,7 +60,7 @@ impl std::fmt::Display for Model {
+ #[derive(Parser, Debug)]
+ #[command(
+     group(ArgGroup::new("weights").args(["gguf", "hf"]).required(true)),
+-    group(ArgGroup::new("length").args(["sequence", "max_context"]).required(true)),
++    group(ArgGroup::new("length").args(["sequence", "max_context", "pairs"]).required(true)),
+ )]
+ struct LLMArgs {
+     /// gguf file to load. It can be a local path or a URL to download.
+@@ -80,6 +81,15 @@ struct LLMArgs {
+     #[arg(long, value_delimiter = ',')]
+     sequence: Vec<usize>,
+ 
++    /// Explicit prompt/output token pairs, e.g. `--pairs 4:4,8:2,2:12`.
++    /// One setup is generated for the largest N+K and reused for all pairs.
++    #[arg(long, value_delimiter = ',')]
++    pairs: Vec<String>,
++
++    /// Text prompt to prove. Repeat this option to prove multiple prompts with one setup.
++    #[arg(long, requires = "max_context", conflicts_with = "sequence")]
++    prompt: Vec<String>,
++
+     /// min user input length (in tokens)
+     #[arg(
+         long,
+@@ -139,6 +149,22 @@ struct LLMArgs {
+     /// Measure layer-wise metrics
+     #[arg(long, default_value_t = false)]
+     measure_layerwise: bool,
++
++    /// Always run exactly to max context, even if EOS is emitted.
++    #[arg(long, default_value_t = false)]
++    fixed_length: bool,
++
++    /// Append a structural ledger for each verified online trial (JSONL).
++    #[arg(long, requires = "fixed_length", conflicts_with = "distributed")]
++    work_ledger: Option<String>,
++
++    /// Independent prompt seed; does not change quantization or ZKP setup.
++    #[arg(long, default_value_t = 20260910)]
++    work_token_seed: u64,
++
++    /// JSON arrays of exact prompt token IDs, one array per --pairs entry.
++    #[arg(long, requires_all = ["work_ledger", "pairs"], conflicts_with = "prompt")]
++    work_prompts: Option<String>,
+ }
+ 
+ const HEADER_MODEL: &str = "model_name";
+@@ -176,31 +202,91 @@ fn main() -> anyhow::Result<()> {
+         .build_global()
+         .unwrap();
+ 
+-    let (max_context, sequence) = if let Some(max_context) = args.max_context {
+-        (max_context, vec![(args.min_user_len, max_context)])
+-    } else {
+-        let mut sequence = args.sequence.clone();
+-        sequence.sort();
+-        (
+-            *sequence.last().unwrap(),
++    let (max_context, sequence): (usize, Vec<(usize, usize)>) =
++        if let Some(max_context) = args.max_context {
++            (max_context, vec![(args.min_user_len, max_context)])
++        } else if !args.pairs.is_empty() {
++            let mut pairs = Vec::with_capacity(args.pairs.len());
++            for pair in &args.pairs {
++                let (n, k) = pair
++                    .split_once(':')
++                    .ok_or_else(|| anyhow::anyhow!("invalid pair {pair:?}; expected N:K"))?;
++                let n: usize = n.parse().context("invalid N in --pairs")?;
++                let k: usize = k.parse().context("invalid K in --pairs")?;
++                ensure!(n > 0 && k > 0, "N and K must be positive in --pairs");
++                pairs.push((n, n + k));
++            }
++            let max_context = pairs.iter().map(|(_, s)| *s).max().unwrap();
++            (max_context, pairs)
++        } else {
++            let mut sequence = args.sequence.clone();
++            sequence.sort();
++            (
++                *sequence.last().unwrap(),
++                sequence
++                    .into_iter()
++                    .map(|s| (s.saturating_sub(2), s))
++                    .collect(),
++            )
++        };
++
++    if args.prompt.is_empty() {
++        info!(
++            "Running with max context {} and user_prompt->max_length: {:?}",
++            max_context,
+             sequence
+-                .into_iter()
+-                .map(|s| (s.saturating_sub(2), s))
+-                .collect(),
+-        )
+-    };
++                .iter()
++                .map(|(s, m)| format!("({}->{})", s, m))
++                .collect::<Vec<_>>()
++                .join(", ")
++        );
++    } else {
++        info!(
++            "Running {} text prompt(s) with max context {}",
++            args.prompt.len(),
++            max_context
++        );
++    }
++
++    let (driver, tokeniser) = parse_model(&args, max_context)?;
+ 
+-    info!(
+-        "Running with max context {} and user_prompt->max_length: {:?}",
+-        max_context,
++    let mut work_rng = StdRng::seed_from_u64(args.work_token_seed);
++    let workloads = if let Some(path) = &args.work_prompts {
++        let prompts = serde_json::from_reader(File::open(path).context("opening work prompts")?)
++            .context("parsing work prompt token IDs")?;
++        explicit_workloads(prompts, &sequence, driver.md.vocab_size())?
++    } else if args.prompt.is_empty() {
+         sequence
+-            .iter()
+-            .map(|(s, m)| format!("({}->{})", s, m))
++            .into_iter()
++            .map(|(user_prompt, max_ctx)| {
++                let tokens = if args.work_ledger.is_some() {
++                    (0..user_prompt)
++                        .map(|_| work_rng.gen_range(0..driver.md.vocab_size()).into())
++                        .collect()
++                } else {
++                    driver.random_sequence(user_prompt)
++                };
++                (tokens, max_ctx)
++            })
+             .collect::<Vec<_>>()
+-            .join(", ")
+-    );
+-
+-    let (driver, tokeniser) = parse_model(&args, max_context)?;
++    } else {
++        args.prompt
++            .iter()
++            .map(|prompt| {
++                let tokens = tokeniser.tokenize(prompt);
++                if tokens.is_empty() {
++                    bail!("prompt must produce at least one token");
++                }
++                if tokens.len() >= max_context {
++                    bail!(
++                        "prompt has {} tokens, but max context must be greater than the prompt length ({max_context})",
++                        tokens.len()
++                    );
++                }
++                Ok((tokens, max_context))
++            })
++            .collect::<anyhow::Result<Vec<_>>>()?
++    };
+ 
+     let mut premeasure = Measure::new()
+         .with(HEADER_MODEL, &args.model.to_string())
+@@ -209,7 +295,7 @@ fn main() -> anyhow::Result<()> {
+         premeasure = premeasure.enable_layerwise_measures();
+     }
+     info!("Converting model into provable model...");
+-    let (mut driver, _metadata) = if !args.accuracy {
++    let (driver, _metadata) = if !args.accuracy {
+         premeasure.r(HEADER_MODEL_QUANT, || driver.into_provable_llm(None))?
+     } else {
+         match args.model {
+@@ -223,6 +309,10 @@ fn main() -> anyhow::Result<()> {
+         }
+     };
+ 
++    // Keep the setup driver's graph alive for the borrowed commitment context;
++    // trial execution uses independent clones below.
++    let setup_driver = driver.clone();
++    eprintln!("POML_EVENT stage=setup_start max_context={}", max_context);
+     let (prover_ctx, mut verifier_ctx) = if let Some(ref params) = args.load_params {
+         info!("Loading proving contexts from {params}.pk and {params}.vk...");
+         let prover_ctx = bincode::serde::decode_from_slice(
+@@ -241,9 +331,13 @@ fn main() -> anyhow::Result<()> {
+     } else {
+         info!("Generating proving contexts...");
+         let (prover_ctx, verifier_ctx): (ProverContext<F, Pcs>, LLMVerifierContext<F, Pcs>) =
+-            premeasure.r(HEADER_CONTEXT_GENERATION, || driver.context())?;
++            // Build commitment data for the model's configured maximum shape.
++            // Unlike `context()`, this context is valid for every shorter
++            // sequence that shares the same maximum context.
++            premeasure.r(HEADER_CONTEXT_GENERATION, || setup_driver.compute_all_contexts())?;
+         (prover_ctx, verifier_ctx)
+     };
++    eprintln!("POML_EVENT stage=setup_done max_context={}", max_context);
+ 
+     if let Some(ref save_params) = args.save_params {
+         if args.load_params.is_some() {
+@@ -262,22 +356,45 @@ fn main() -> anyhow::Result<()> {
+         )?)?;
+     }
+ 
+-    for (user_prompt, max_ctx) in sequence {
++    // Bind the ledger to the actual setup, not merely the requested context size.
++    let work_setup = if args.work_ledger.is_some() {
++        let bytes = bincode::serde::encode_to_vec(&verifier_ctx, bincode::config::standard())?;
++        Some(dp_crypto::work::digest(&bytes))
++    } else {
++        None
++    };
++    let total_trials = workloads.len();
++    for (trial_index, (user_tokens, max_ctx)) in workloads.into_iter().enumerate() {
+         // make a new measure for each trial, but always keep the initial measurements for each sample
+         measure::set_global(premeasure.clone());
+ 
++        // `compute_all_contexts` borrows the setup driver.  Clone the cheap
++        // execution wrapper for each workload so the same maximum-length
++        // proving context can serve shorter N,K pairs as well.
++        let mut trial_driver = driver.clone();
++        eprintln!(
++            "POML_EVENT trial={} total={} stage=start N={} S={}",
++            trial_index + 1,
++            total_trials,
++            user_tokens.len(),
++            max_ctx
++        );
++
+         measure::set(HEADER_MAX_CONTEXT, max_ctx.to_string());
+-        measure::set(HEADER_MIN_USER_LEN, user_prompt.to_string());
++        measure::set(HEADER_MIN_USER_LEN, user_tokens.len().to_string());
+ 
+-        driver.with_max_context(max_ctx);
+-        let user_tokens = driver.random_sequence(user_prompt);
+-        let input_tensor = driver.tokens_to_tensor(&user_tokens)?;
++        trial_driver.with_max_context(max_ctx);
++        trial_driver.with_stop_on_eos(!args.fixed_length);
++        let input_tensor = trial_driver.tokens_to_tensor(&user_tokens)?;
++        if args.work_ledger.is_some() {
++            dp_crypto::work::begin();
++        }
+         let (trace, chunks) = if args.distributed {
+             let (chunks, split_node_info) = prover_ctx.split_in_chunks(
+                 args.num_chunks,
+-                driver.chunking_strategy(&input_tensor, &prover_ctx)?,
++                trial_driver.chunking_strategy(&input_tensor, &prover_ctx)?,
+             )?;
+-            let engine = InferenceEngine::LLM(driver);
++            let engine = InferenceEngine::LLM(trial_driver);
+             let trace = measure::r(HEADER_INFERENCE_TIME, || {
+                 info!("Running inference...");
+                 engine.run(
+@@ -286,8 +403,8 @@ fn main() -> anyhow::Result<()> {
+                     &split_node_info,
+                 )
+             })?;
+-            driver = match engine {
+-                InferenceEngine::LLM(driver) => driver,
++            trial_driver = match engine {
++                InferenceEngine::LLM(trial_driver) => trial_driver,
+                 _ => bail!("Expected LLM engine"),
+             };
+             (trace, Some(chunks))
+@@ -295,11 +412,16 @@ fn main() -> anyhow::Result<()> {
+             (
+                 measure::r(HEADER_INFERENCE_TIME, || {
+                     info!("Running inference...");
+-                    driver.run_elements(input_tensor, &mut GenStore::default())
++                    trial_driver.run_elements(input_tensor, &mut GenStore::default())
+                 })?,
+                 None,
+             )
+         };
++        eprintln!(
++            "POML_EVENT trial={} total={} stage=inference_done",
++            trial_index + 1,
++            total_trials
++        );
+ 
+         if args.memory {
+             info!(
+@@ -308,13 +430,16 @@ fn main() -> anyhow::Result<()> {
+             );
+             utils::track::flame_graph_enable();
+         }
++        if args.work_ledger.is_some() {
++            dp_crypto::work::phase("proof");
++        }
+         let (proof, io) = if args.distributed {
+             info!("Running distributed proving locally...");
+-            distributed::run_distributed(trace, &driver, &prover_ctx, chunks.unwrap())?
++            distributed::run_distributed(trace, &trial_driver, &prover_ctx, chunks.unwrap())?
+         } else {
+             let peak_rss = peak_rss_bytes();
+             info!("Running proving locally...");
+-            let (proof, io) = driver.prove(&prover_ctx, trace)?;
++            let (proof, io) = trial_driver.prove(&prover_ctx, trace)?;
+             let new_peak_rss = peak_rss_bytes();
+             if new_peak_rss == peak_rss {
+                 warn!(
+@@ -333,14 +458,37 @@ fn main() -> anyhow::Result<()> {
+             utils::track::flame_graph();
+         }
+ 
++        let work_events = args.work_ledger.as_ref().map(|_| dp_crypto::work::finish());
++        let work_meta = serde_json::json!({"n": user_tokens.len(), "k": max_ctx - user_tokens.len(),
++            "setup_max": max_context, "setup_digest": work_setup, "schema": "gpt2-deepprove-work-3",
++            "token_seed": args.work_token_seed, "trial": trial_index + 1, "tokens": user_tokens,
++            "backend": if cfg!(feature = "cuda") {"cuda"} else {"cpu"}});
+         let proof_size = rmp_serde::to_vec(&proof)?.len();
+         measure::set(HEADER_PROOF_SIZE, proof_size);
+ 
+         verifier_ctx = verifier_ctx.with_max_context(max_ctx);
+         info!("Verifying proof...");
+-        verifier_ctx
+-            .verify(proof, user_tokens, io)
+-            .expect("invalid proof");
++        if args.fixed_length {
++            verifier_ctx.verify_fixed_length(proof, user_tokens, io)
++        } else {
++            verifier_ctx.verify(proof, user_tokens, io)
++        }
++        .expect("invalid proof");
++        if let (Some(path), Some(events)) = (&args.work_ledger, work_events) {
++            let mut ledger = std::fs::OpenOptions::new()
++                .create(true)
++                .append(true)
++                .open(path)?;
++            let row = serde_json::json!({"meta": work_meta, "verified": true, "events": events});
++            serde_json::to_writer(&mut ledger, &row)?;
++            writeln!(ledger)?;
++        }
++
++        eprintln!(
++            "POML_EVENT trial={} total={} stage=done",
++            trial_index + 1,
++            total_trials
++        );
+         if !args.distributed {
+             measure::post_process(|metrics| {
+                 let Ok(proof_time) = metrics.get("prove_full").unwrap().parse::<usize>() else {
+@@ -360,6 +508,123 @@ fn main() -> anyhow::Result<()> {
+     Ok(())
+ }
+ 
++/// Validate exact token replays before quantization/setup or online execution.
++fn explicit_workloads(
++    prompts: Vec<Vec<usize>>,
++    sequence: &[(usize, usize)],
++    vocab_size: usize,
++) -> anyhow::Result<Vec<(Vec<Token>, usize)>> {
++    ensure!(prompts.len() == sequence.len(), "Need one prompt per pair");
++    prompts
++        .into_iter()
++        .zip(sequence)
++        .map(|(tokens, &(n, total))| {
++            ensure!(tokens.len() == n, "Prompt token count must equal N");
++            ensure!(
++                tokens.iter().all(|&t| t < vocab_size),
++                "Prompt token outside vocabulary"
++            );
++            Ok((tokens.into_iter().map(Token::from).collect(), total))
++        })
++        .collect()
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn accepts_exact_token_replay() {
++        let workloads = explicit_workloads(vec![vec![1, 2]], &[(2, 5)], 3).unwrap();
++        assert_eq!(workloads[0].0.len(), 2);
++        assert_eq!(workloads[0].1, 5);
++        assert_eq!(workloads[0].0[0].as_tensor_type_param::<i64>(), 1);
++    }
++
++    #[test]
++    fn rejects_malformed_token_replays() {
++        assert!(explicit_workloads(vec![], &[(2, 5)], 3).is_err());
++        assert!(explicit_workloads(vec![vec![1]], &[(2, 5)], 3).is_err());
++        assert!(explicit_workloads(vec![vec![1, 3]], &[(2, 5)], 3).is_err());
++    }
++
++    #[test]
++    fn ledger_requires_fixed_length_and_rejects_distributed() {
++        let base = [
++            "bench-llm",
++            "--model",
++            "gpt2",
++            "--hf",
++            "openai-community/gpt2",
++            "--pairs",
++            "2:2",
++            "--work-ledger",
++            "ledger.jsonl",
++        ];
++        assert!(LLMArgs::try_parse_from(base).is_err());
++        let fixed = base.into_iter().chain(["--fixed-length"]);
++        assert!(LLMArgs::try_parse_from(fixed.clone()).is_ok());
++        assert!(LLMArgs::try_parse_from(fixed.chain(["--distributed"])).is_err());
++    }
++
++    #[test]
++    fn accepts_repeated_prompts_with_max_context() {
++        let args = LLMArgs::try_parse_from([
++            "bench-llm",
++            "--model",
++            "gpt2",
++            "--hf",
++            "openai-community/gpt2",
++            "--max-context",
++            "8",
++            "--prompt",
++            "Proofs bind computation",
++            "--prompt",
++            "Verification checks claims",
++        ])
++        .unwrap();
++
++        assert_eq!(
++            args.prompt,
++            ["Proofs bind computation", "Verification checks claims"]
++        );
++    }
++
++    #[test]
++    fn rejects_prompt_without_max_context() {
++        let result = LLMArgs::try_parse_from([
++            "bench-llm",
++            "--model",
++            "gpt2",
++            "--hf",
++            "openai-community/gpt2",
++            "--prompt",
++            "Proofs bind computation",
++        ]);
++
++        assert!(result.is_err());
++    }
++
++    #[test]
++    fn rejects_prompt_with_sequence() {
++        let result = LLMArgs::try_parse_from([
++            "bench-llm",
++            "--model",
++            "gpt2",
++            "--hf",
++            "openai-community/gpt2",
++            "--max-context",
++            "8",
++            "--sequence",
++            "8",
++            "--prompt",
++            "Proofs bind computation",
++        ]);
++
++        assert!(result.is_err());
++    }
++}
++
+ fn peak_rss_bytes() -> u64 {
+     unsafe {
+         let mut r: rusage = std::mem::zeroed();
+@@ -430,7 +695,6 @@ mod distributed {
+     use tracing::debug;
+ 
+     use zkml::{
+-        Element, IO, Proof, Prover,
+         graph::{
+             executor::{Executor, ThreadPoolExecutor},
+             partition::PartitionScheduler,
+@@ -441,6 +705,7 @@ mod distributed {
+             prover_graph::{LocalProverCtx, ProverGraphIO, ProverGraphNode},
+         },
+         model::Trace,
++        Element, Proof, Prover, IO,
+     };
+ 
+     pub type T = Blake3Transcript;
+diff --git a/zkml/src/layers/einsum/axis.rs b/zkml/src/layers/einsum/axis.rs
+index 8e24bbcc..6b5a8bd3 100644
+--- a/zkml/src/layers/einsum/axis.rs
++++ b/zkml/src/layers/einsum/axis.rs
+@@ -2,15 +2,15 @@
+ 
+ use std::{collections::HashSet, ops::Index, sync::OnceLock};
+ 
+-use crate::{Claim, Shape, Tensor, eval_zeroifier_mle, to_bit_sequence_le};
++use crate::{eval_zeroifier_mle, to_bit_sequence_le, Claim, Shape, Tensor};
+ 
+-use anyhow::{Context, Result, anyhow, bail, ensure};
++use anyhow::{anyhow, bail, ensure, Context, Result};
+ use ark_ff::PrimeField;
+ use dp_crypto::{
+     poly::{dense::DensePolynomial, eq::evals},
+     util::ceil_log2,
+ };
+-use itertools::{Itertools, izip};
++use itertools::{izip, Itertools};
+ use serde::{Deserialize, Serialize};
+ 
+ use rayon::prelude::*;
+@@ -1154,6 +1154,7 @@ impl<'a, F: PrimeField> FixedAxesMapping<'a, F> {
+                 |(mut current_evals, chunk_size, contraction_acc), (fixed_axis, dim_size)| {
+                     match fixed_axis {
+                         FixedAxis::Outer(beta_evals) => {
++                            dp_crypto::work::record(serde_json::json!({"op": "axis_dot", "length": current_evals.len(), "axis": dim_size}));
+                             // If this is an outer axis we need to fix these variables
+                             if chunk_size == 1 {
+                                 // If the chunk size is 1 we can just do a direct dot product,
+@@ -1282,8 +1283,8 @@ mod tests {
+     use ark_std::rand::Rng;
+ 
+     use crate::{
+-        Element, NextPowerOfTwo, quantization::ToField, rng_from_env_or_random,
+-        testing::random_field_vector,
++        quantization::ToField, rng_from_env_or_random, testing::random_field_vector, Element,
++        NextPowerOfTwo,
+     };
+ 
+     use super::*;
+diff --git a/zkml/src/layers/einsum/evaluate.rs b/zkml/src/layers/einsum/evaluate.rs
+index 85cfa5e6..7ab8d707 100644
+--- a/zkml/src/layers/einsum/evaluate.rs
++++ b/zkml/src/layers/einsum/evaluate.rs
+@@ -4,9 +4,9 @@ use super::*;
+ 
+ use crate::Shape;
+ 
+-use anyhow::{Context, Result, anyhow};
++use anyhow::{anyhow, Context, Result};
+ use burn::prelude::Shape as BShape;
+-use itertools::{Itertools, izip};
++use itertools::{izip, Itertools};
+ 
+ impl<N> EinSum<N>
+ where
+@@ -131,6 +131,12 @@ where
+             .into_iter()
+             .map(|rhs| {
+                 // The matmul doesn't update the unpadded shape so we need to do it here manually
++                if dp_crypto::work::enabled() {
++                    dp_crypto::work::record(serde_json::json!({
++                        "op": "matmul", "equation": self.equation,
++                        "lhs": lhs_burn.shape().dims, "rhs": rhs.shape().dims,
++                    }));
++                }
+                 let mut intermediate = lhs_burn.clone().matmul(rhs)?;
+                 let shape = intermediate.shape();
+                 intermediate.set_unpadded_shape(shape);
+@@ -497,7 +503,7 @@ mod tests {
+     use tenstore::{GenStore, StorageKey};
+ 
+     use super::*;
+-    use crate::{Element, Tensor, rng_from_env_or_random, tensor::IntoBTensor};
++    use crate::{rng_from_env_or_random, tensor::IntoBTensor, Element, Tensor};
+     use burn::tensor::Tensor as BurnTensor;
+ 
+     const TEST_CASES: usize = 5;
+diff --git a/zkml/src/layers/mod.rs b/zkml/src/layers/mod.rs
+index 9c49a5c3..9e4fe6f0 100644
+--- a/zkml/src/layers/mod.rs
++++ b/zkml/src/layers/mod.rs
+@@ -1,36 +1,35 @@
+ use crate::{
+-    Element, InitTranscript, ProverContext, ScalingStrategy, Shape,
+     graph::NodeId,
+     iop::context::{ContextAux, ShapeStep},
+     layers::{
+-        activation::{ACTIVATION_LAYER, Activation, ActivationProof},
+-        add::{ADD_LAYER, Add, AddCtx, AddProof},
+-        convolution::{CONVOLUTION_LAYER, ConvFFTHandle, Convolution},
+-        einsum::{EINSUM_LAYER, EinSum, EinSumContext, EinSumProof},
++        activation::{Activation, ActivationProof, ACTIVATION_LAYER},
++        add::{Add, AddCtx, AddProof, ADD_LAYER},
++        convolution::{ConvFFTHandle, Convolution, CONVOLUTION_LAYER},
++        einsum::{EinSum, EinSumContext, EinSumProof, EINSUM_LAYER},
+         flatten::FLATTEN_LAYER,
+-        pooling::{POOLING_LAYER, Pooling},
++        pooling::{Pooling, POOLING_LAYER},
+         provable::{ProvingHandle, Splittable},
+-        recombination::{RECOMBINATION_LAYER, RecombinationLayer, RecombinationProof},
+-        requant::{REQUANT_LAYER, Requant, RequantProof},
+-        reshape::{RESHAPE_LAYER, Reshape, ReshapeCtx},
+-        split::{SPLIT_LAYER, SplitLayer, SplitLayerProof},
++        recombination::{RecombinationLayer, RecombinationProof, RECOMBINATION_LAYER},
++        requant::{Requant, RequantProof, REQUANT_LAYER},
++        reshape::{Reshape, ReshapeCtx, RESHAPE_LAYER},
++        split::{SplitLayer, SplitLayerProof, SPLIT_LAYER},
+         transformer::{
+             attention_mask::{
+-                ATTENTION_MASK_LAYER, AttentionMask, AttentionMaskCtx, AttentionMaskProof,
++                AttentionMask, AttentionMaskCtx, AttentionMaskProof, ATTENTION_MASK_LAYER,
+             },
+-            embeddings::{EMBEDDINGS_LAYER, Embeddings, EmbeddingsCtx, EmbeddingsProof},
+-            logits::{ArgmaxHandle, LOGITS_LAYER, Logits, LogitsCtx, LogitsProof},
++            embeddings::{Embeddings, EmbeddingsCtx, EmbeddingsProof, EMBEDDINGS_LAYER},
++            logits::{ArgmaxHandle, Logits, LogitsCtx, LogitsProof, LOGITS_LAYER},
+             normalisation::{
+                 layernorm::{
+-                    LAYERNORM_LAYER, LayerNorm, LayerNormCtx, LayerNormProof,
+-                    evaluate::LayerNormHandle,
++                    evaluate::LayerNormHandle, LayerNorm, LayerNormCtx, LayerNormProof,
++                    LAYERNORM_LAYER,
+                 },
+                 rmsnorm::{
+-                    RMSNORM_LAYER, RMSNorm, RMSNormCtx, RMSNormProof, evaluate::RMSNormHandle,
++                    evaluate::RMSNormHandle, RMSNorm, RMSNormCtx, RMSNormProof, RMSNORM_LAYER,
+                 },
+             },
+-            positional::{POSITIONAL_LAYER, Positional, PositionalCtx, PositionalProof},
+-            softmax::{SOFTMAX_LAYER, Softmax, SoftmaxCtx, SoftmaxHandle, SoftmaxProof},
++            positional::{Positional, PositionalCtx, PositionalProof, POSITIONAL_LAYER},
++            softmax::{Softmax, SoftmaxCtx, SoftmaxHandle, SoftmaxProof, SOFTMAX_LAYER},
+         },
+     },
+     lookup::{context::LookupWitnessGen, table::Table},
+@@ -38,19 +37,20 @@ use crate::{
+     padding::{PaddingMode, ShapeInfo},
+     quantization::{ModelMetadata, ScalingFactor},
+     tensor::{TensorHandle, TensorTypeParam, WrappedTensor},
++    Element, InitTranscript, ProverContext, ScalingStrategy, Shape,
+ };
+ use activation::ActivationCtx;
+-use anyhow::{Result, bail, ensure};
++use anyhow::{bail, ensure, Result};
+ use ark_ff::PrimeField;
+ use convolution::{ConvCtx, ConvProof};
+-use dp_crypto::arkyper::{CommitmentScheme, transcript::Transcript};
++use dp_crypto::arkyper::{transcript::Transcript, CommitmentScheme};
+ use flatten::Flatten;
+ use pooling::{PoolingCtx, PoolingProof};
+ use provable::{
+     Evaluate, LayerOut, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput,
+ };
+ use requant::RequantCtx;
+-use serde::{Deserialize, Serialize, de::DeserializeOwned};
++use serde::{de::DeserializeOwned, Deserialize, Serialize};
+ use std::fmt::Debug;
+ use tenstore::StoreError;
+ 
+@@ -556,6 +556,12 @@ impl Evaluate<f32> for Layer<f32> {
+ 
+ impl Evaluate<Element> for Layer<Element> {
+     fn evaluate(&self, inputs: &[&WrappedTensor<Element>]) -> Result<LayerOut<Element>> {
++        if dp_crypto::work::enabled() {
++            dp_crypto::work::record(serde_json::json!({
++                "op": "layer", "kind": self.as_kind_str(),
++                "inputs": inputs.iter().map(|t| t.shape().dims).collect::<Vec<_>>(),
++            }));
++        }
+         let output = match self {
+             Layer::Convolution(convolution) => convolution.evaluate(inputs),
+             Layer::LayerNorm(layernorm) => layernorm.evaluate(inputs),
+diff --git a/zkml/src/lookup/logup_gkr/circuit.rs b/zkml/src/lookup/logup_gkr/circuit.rs
+index df988186..a59f7b06 100644
+--- a/zkml/src/lookup/logup_gkr/circuit.rs
++++ b/zkml/src/lookup/logup_gkr/circuit.rs
+@@ -3,9 +3,9 @@
+ use ark_ff::PrimeField;
+ use ark_std::Zero;
+ use dp_crypto::{
+-    Expression,
+     poly::{dense::DensePolynomial, slice::SmartSlice},
+     util::ceil_log2,
++    Expression,
+ };
+ 
+ use itertools::izip;
+@@ -510,6 +510,31 @@ pub struct LogUpCircuit<F: PrimeField> {
+ impl<F: PrimeField> LogUpCircuit<F> {
+     /// Creates a new circuit from a [`LogUpLayer`]
+     pub fn new(initial_layer: LogUpLayer<F>) -> LogUpCircuit<F> {
++        if dp_crypto::work::enabled() {
++            let (kind, length, columns) = match &initial_layer {
++                LogUpLayer::InitialLookup {
++                    denominator_columns,
++                    ..
++                } => (
++                    "lookup",
++                    denominator_columns[0].len(),
++                    denominator_columns.len(),
++                ),
++                LogUpLayer::InitialTable {
++                    denominator_columns,
++                    ..
++                } => (
++                    "table",
++                    denominator_columns[0].len(),
++                    denominator_columns.len(),
++                ),
++                LogUpLayer::Generic { denominator, .. } => ("generic", denominator.len(), 0),
++            };
++            dp_crypto::work::record(
++                serde_json::json!({"op": "logup_build", "kind": kind, "length": length, "columns": columns}),
++            );
++        }
++
+         let layers = std::iter::successors(Some(initial_layer), |layer| layer.next_layer())
+             .collect::<Vec<LogUpLayer<F>>>();
+         LogUpCircuit { layers }
+diff --git a/zkml/src/lookup/operation/decomposer.rs b/zkml/src/lookup/operation/decomposer.rs
+index 5c7485c9..3cbbc499 100644
+--- a/zkml/src/lookup/operation/decomposer.rs
++++ b/zkml/src/lookup/operation/decomposer.rs
+@@ -2,11 +2,11 @@
+ //! This is used for general chunking of input values for lookup operations.
+ 
+ use crate::lookup::table::{
+-    SHIFT_CHECK_TABLE_BIT_SIZE, TableSign, TableType, ZERO_CHECK_TABLE_BIT_SIZE,
++    TableSign, TableType, SHIFT_CHECK_TABLE_BIT_SIZE, ZERO_CHECK_TABLE_BIT_SIZE,
+ };
+ 
+ use super::*;
+-use anyhow::{Result, ensure};
++use anyhow::{ensure, Result};
+ 
+ #[derive(Debug, Clone, Copy)]
+ /// This struct holds all of the information needed for decomposing input values into shifted chunks, value chunk and zeroing chunks.
+@@ -250,6 +250,11 @@ impl ChunkingInfo {
+ 
+     /// Decomposes a vector of input values into shifted chunks, value chunk and zeroing chunks.
+     pub fn decompose_input(&self, input: Vec<Element>) -> ChunkedInput {
++        dp_crypto::work::record(
++            serde_json::json!({"op": "lookup_decompose", "length": input.len(),
++            "chunks": self.number_of_value_chunks + self.number_of_shifted_chunks + self.number_of_zeroing_chunks}),
++        );
++
+         input.into_iter().fold(
+             ChunkedInput::new(
+                 self.number_of_shifted_chunks,
+diff --git a/zkml/src/model/llm.rs b/zkml/src/model/llm.rs
+index ab987ac1..25014dd7 100644
+--- a/zkml/src/model/llm.rs
++++ b/zkml/src/model/llm.rs
+@@ -6,50 +6,48 @@
+ 
+ use crate::{
+     iop::chunking::LLMChunkingStrategy,
+-    parser::llm::{HFTokenizer, metadata::LLMMetadata},
+-    quantization::{LLMInferenceObserver, llm_quant::FPTransformModel},
++    parser::llm::{metadata::LLMMetadata, HFTokenizer},
++    quantization::{llm_quant::FPTransformModel, LLMInferenceObserver},
+ };
+ use std::{
+     fmt::Display,
+     ops::Deref,
+     sync::{
+-        Arc,
+         atomic::{AtomicBool, Ordering},
+-        mpsc,
++        mpsc, Arc,
+     },
+     thread,
+ };
+ 
+ use crate::{
+-    Element, IO, Proof, Prover, ProverContext, ScalingStrategy, Shape, Tensor,
+     graph::executor::{Executor, SequentialExecutor},
+     iop::{
+         chunking::{ChunkingStrategy, DefaultChunkingStrategy},
+         context::VerifierContext,
+         prover_graph::ProverGraphNode,
+     },
+-    layers::{Layer, provable::Evaluate},
++    layers::{provable::Evaluate, Layer},
+     model::{
+-        BaseRunner, HandleLifetimeRunner, LayerRunner, Model, RunInput, Trace, TrackerRunner,
+-        tensor_to_handles, trace::SplittedNodesInfo, wrapped_tensor_to_handles,
++        tensor_to_handles, trace::SplittedNodesInfo, wrapped_tensor_to_handles, BaseRunner,
++        HandleLifetimeRunner, LayerRunner, Model, RunInput, Trace, TrackerRunner,
+     },
+     number::Number,
+     padding::PaddingMode,
+     parser::{
+-        PipelineConfig, default_pipeline_config,
+-        llm::{Token, models::LLMModelLoader},
+-        to_quantized,
++        default_pipeline_config,
++        llm::{models::LLMModelLoader, Token},
++        to_quantized, PipelineConfig,
+     },
+     quantization::{InferenceObserver, InferenceTracker, ModelMetadata, ToElement},
+     tensor::{TensorHandle, TensorTypeParam, WrappedTensor},
+-    verify,
++    verify, Element, Proof, Prover, ProverContext, ScalingStrategy, Shape, Tensor, IO,
+ };
+-use anyhow::{Context, anyhow, ensure};
++use anyhow::{anyhow, ensure, Context};
+ use ark_ff::PrimeField;
+ use ark_std::rand::Rng;
+-use dp_crypto::arkyper::{CommitmentScheme, transcript::blake3::Blake3Transcript};
++use dp_crypto::arkyper::{transcript::blake3::Blake3Transcript, CommitmentScheme};
+ use itertools::Itertools;
+-use serde::{Deserialize, Serialize, de::DeserializeOwned};
++use serde::{de::DeserializeOwned, Deserialize, Serialize};
+ use tenstore::GenStore;
+ use tracing::{debug, info, info_span};
+ 
+@@ -129,6 +127,8 @@ where
+     pub md: LLMMetadata,
+     pub(crate) max_context: Option<usize>,
+     pub(crate) padding_mode: PaddingMode,
++    /// Whether autoregressive generation stops when EOS is emitted.
++    pub(crate) stop_on_eos: bool,
+ }
+ 
+ impl<N: TensorTypeParam> Driver<N> {
+@@ -165,6 +165,7 @@ impl Driver<f32> {
+             md,
+             max_context,
+             padding_mode: PaddingMode::NoPadding,
++            stop_on_eos: true,
+         })
+     }
+ 
+@@ -208,6 +209,7 @@ impl Driver<f32> {
+                 md: self.md,
+                 max_context: self.max_context,
+                 padding_mode: PaddingMode::Padding,
++                stop_on_eos: self.stop_on_eos,
+             },
+             metadata,
+         ))
+@@ -236,6 +238,7 @@ impl Driver<f32> {
+                 md: self.md,
+                 max_context: self.max_context,
+                 padding_mode: PaddingMode::Padding,
++                stop_on_eos: self.stop_on_eos,
+             },
+             metadata,
+         ))
+@@ -247,6 +250,7 @@ impl Driver<f32> {
+     ) -> anyhow::Result<(Driver<Element>, ModelMetadata)> {
+         let max_context = self.max_context;
+         let md = self.md.clone();
++        let stop_on_eos = self.stop_on_eos;
+ 
+         let llm_inference_observer =
+             LLMInferenceObserver::new_with_tokeniser(tokeniser.clone(), self.md.clone(), None);
+@@ -271,6 +275,7 @@ impl Driver<f32> {
+                 md,
+                 max_context,
+                 padding_mode: PaddingMode::Padding,
++                stop_on_eos,
+             },
+             metadata,
+         ))
+@@ -292,6 +297,11 @@ where
+         self.max_context = Some(max_context);
+     }
+ 
++    /// Configure whether EOS terminates generation before the requested window.
++    pub fn with_stop_on_eos(&mut self, stop_on_eos: bool) {
++        self.stop_on_eos = stop_on_eos;
++    }
++
+     /// Returns a sequence of `len` random tokens.
+     pub fn random_sequence(&self, len: usize) -> Vec<Token> {
+         let mut rng = crate::rng_from_env_or_random();
+@@ -304,10 +314,12 @@ where
+     ///
+     /// # Errors
+     ///
+-    /// If the number of tokens exceeds the current configured `context_length`.
++    /// If the prompt leaves no room for an output in `context_length`.
+     pub fn tokens_to_tensor(&self, input: &[Token]) -> anyhow::Result<Tensor<N>> {
++        // One free position is sufficient for K=1; reserving two rejected the
++        // valid N=63, K=1 edge of a 64-token context before inference started.
+         ensure!(
+-            input.len() < self.md.config.context_length - 1,
++            input.len() < self.md.config.context_length,
+             "Input sequence length must be less than the context length",
+         );
+         let input_tokens = input
+@@ -435,8 +447,8 @@ where
+ 
+         // -1 because we at least want to generate ONE token
+         ensure!(
+-            num_input_tokens < self.md.context_length() - 1,
+-            "Input sequence length must be at least one fewer than the context length",
++            num_input_tokens < self.md.context_length(),
++            "Input sequence length must be less than the context length",
+         );
+ 
+         let max_window = self.max_context.unwrap_or(self.md.context_length());
+@@ -469,13 +481,14 @@ where
+         let (tx, rx) = mpsc::sync_channel::<WrappedTensor<N>>(10);
+         let stop = Arc::new(AtomicBool::new(false));
+         let eos_token: N = self.md.config.eos_token.as_tensor_type_param();
++        let stop_on_eos = self.stop_on_eos;
+         let handle = {
+             let stop = Arc::clone(&stop);
+             thread::spawn(move || -> anyhow::Result<Vec<N>> {
+                 let mut generated_tokens = Vec::with_capacity(max_window);
+                 while let Ok(tensor) = rx.recv() {
+                     let token = tensor.get_data()[0];
+-                    if token == eos_token {
++                    if stop_on_eos && token == eos_token {
+                         stop.store(true, Ordering::Relaxed);
+                         return Ok(generated_tokens);
+                     }
+@@ -670,9 +683,10 @@ impl Driver<Element> {
+         PCS: CommitmentScheme<Field = F>,
+     {
+         // compute shapes for all possible input sequence lengths
+-        let max_input_shapes = vec![Shape::new(vec![
+-            self.md.context_length().next_power_of_two(),
+-        ])];
++        let max_input_shapes = vec![Shape::new(vec![self
++            .md
++            .context_length()
++            .next_power_of_two()])];
+         ensure!(
+             max_input_shapes.len() == 1,
+             "Expected 1 input shape in LLM model, found {}",
+@@ -807,6 +821,32 @@ where
+         user_input: Vec<Token>,
+         inference_output: IO<F>,
+     ) -> anyhow::Result<()>
++    where
++        PCS::Commitment: PartialEq,
++    {
++        self.verify_with_termination(proof, user_input, inference_output, true)
++    }
++
++    /// Verify a fixed-length continuation, including links after any EOS token.
++    pub fn verify_fixed_length(
++        &self,
++        proof: Proof<F, PCS>,
++        user_input: Vec<Token>,
++        inference_output: IO<F>,
++    ) -> anyhow::Result<()>
++    where
++        PCS::Commitment: PartialEq,
++    {
++        self.verify_with_termination(proof, user_input, inference_output, false)
++    }
++
++    fn verify_with_termination(
++        &self,
++        proof: Proof<F, PCS>,
++        user_input: Vec<Token>,
++        inference_output: IO<F>,
++        stop_on_eos: bool,
++    ) -> anyhow::Result<()>
+     where
+         PCS::Commitment: PartialEq,
+     {
+@@ -840,7 +880,18 @@ where
+             .take(max_window) // consider only the first max_window tokens
+             .skip(user_input.len() - 1) // the first user_input.len() - 1 are not meaningful
+             .find_position(|token| token.to_element() as usize == usize::from(eos_token));
+-        let unpadded_output_len = if let Some(pos) = &eos_token_found {
++        let unpadded_output_len = if !stop_on_eos {
++            // SECURITY: fixed-length benchmarking must check every continuation
++            // link, including those after EOS; ordinary EOS verification truncates.
++            ensure!(!user_input.is_empty(), "prompt must not be empty");
++            ensure!(inference_output.input.len() == 1, "expected one input");
++            ensure!(
++                inference_output.input[0].data().len() >= max_window
++                    && output.data().len() >= max_window,
++                "fixed-length IO is shorter than the requested context"
++            );
++            max_window
++        } else if let Some(pos) = &eos_token_found {
+             pos.0
+         } else {
+             max_window
+@@ -880,8 +931,8 @@ where
+ #[cfg(test)]
+ mod test {
+     use crate::{
+-        Number, init_test_logging,
+-        iop::{ProverContext, chunking::LLMChunkingStrategy},
++        init_test_logging,
++        iop::{chunking::LLMChunkingStrategy, ProverContext},
+         model::{
+             llm::{Driver, LLMVerifierContext, WithMaxContext},
+             test::F,
+@@ -890,17 +941,18 @@ mod test {
+             file_cache,
+             gguf::{RawGGUF, TensorLoader},
+             llm::{
+-                HFTokenizer, LLMTokenizer, Token,
+                 models::{
+-                    gemma3::{Gemma3, tests::GEMMA3_Q8},
++                    gemma3::{tests::GEMMA3_Q8, Gemma3},
+                     gpt2::{GPT2, GPT2_Q8_0},
+                 },
+                 tokenizer::TokenizerLoader,
++                HFTokenizer, LLMTokenizer, Token,
+             },
+             safe::RawSafeTensors,
+         },
+         rng_from_env_or_random,
+         testing::Pcs,
++        Number,
+     };
+     use anyhow::Context;
+     use ark_std::rand::Rng;
+@@ -1188,7 +1240,7 @@ mod test {
+     // ---- Llama2 (SafeTensors) ----
+ 
+     fn test_generic_prove_llm_llama2<const DISTRIBUTE_PROVE: bool>() -> anyhow::Result<()> {
+-        use crate::parser::llm::models::llama2::{Llama2, tests::LLAMA2_SAFE_MODEL};
++        use crate::parser::llm::models::llama2::{tests::LLAMA2_SAFE_MODEL, Llama2};
+ 
+         init_test_logging("debug");
+         const MAX_CONTEXT: usize = 10;
+diff --git a/zkml/src/parser/llm/models/gpt2/mod.rs b/zkml/src/parser/llm/models/gpt2/mod.rs
+index 5723aca9..7a443447 100644
+--- a/zkml/src/parser/llm/models/gpt2/mod.rs
++++ b/zkml/src/parser/llm/models/gpt2/mod.rs
+@@ -1,34 +1,35 @@
+ use crate::{
+     parser::{
+-        Load,
+         llm::{
+             metadata::LLMMetadata,
+-            models::{LLMModelLoader, gpt2::decoder::GPT2Decoder},
++            models::{gpt2::decoder::GPT2Decoder, LLMModelLoader},
+         },
++        Load,
+     },
+     tensor::KeyedTensor,
+ };
+ 
+ use crate::{
+-    Shape,
+     layers::transformer::attention_mask::AttentionSpan,
+     model::Model,
+     parser::{
+-        ModelLoader,
+         gguf::RawGGUF,
+         json,
+         json::RawJSON,
+         llm::{
+-            HFTokenizer, LLMConfig, LLMIR,
+             config::{AttentionConfig, AttentionHeadType, LLMStructure, PositionalConfig},
+             tokenizer::TokenizerLoader,
+             transformer::NormType,
++            HFTokenizer, LLMConfig, LLMIR,
+         },
+         safe,
+         safe::RawSafeTensors,
++        ModelLoader,
+     },
++    Shape,
+ };
+ use anyhow::Context;
++use tenstore::StorageKey;
+ 
+ pub mod decoder;
+ 
+@@ -253,7 +254,10 @@ impl ModelLoader<RawSafeTensors> for GPT2 {
+             "O(sv)"
+         };
+         let equation = format!("{input_terms}->{output_terms}");
+-        let proj_weights = KeyedTensor::try_from(&embeddings.mat)?;
++        let mut proj_weights = KeyedTensor::try_from(&embeddings.mat)?;
++        // Embeddings and the tied output projection are quantized independently, so they
++        // must not share a polynomial commitment identifier after parsing.
++        proj_weights.key = StorageKey::from(format!("{}_final_proj", proj_weights.storage_key()));
+         let final_proj = EinSum::<f32>::new(
+             equation,
+             vec![Some(proj_weights.into())],
+@@ -294,8 +298,10 @@ pub mod tests {
+ 
+     use super::*;
+     use crate::{
+-        Tensor,
++        layers::Layer,
+         parser::{file_cache, llm::LLMTokenizer, safe::RawSafeTensors},
++        tensor::CommitmentId,
++        Tensor,
+     };
+ 
+     pub const GPT2_Q8_0: &str = "gpt2.Q8_0.gguf";
+@@ -364,4 +370,36 @@ pub mod tests {
+         model.run_float(vec![input], &mut GenStore::default())?;
+         Ok(())
+     }
++
++    #[test]
++    fn test_safe_gpt2_uses_distinct_tied_weight_commitments() -> anyhow::Result<()> {
++        let raw = RawSafeTensors::from_hugging_face_cached(GPT2_SAFE_MODEL)?;
++        let (model, md) = GPT2::new().parse(&raw)?;
++
++        let Layer::Embeddings(embeddings) = model
++            .graph()
++            .node(md.embeddings)
++            .unwrap()
++            .as_inner()
++            .unwrap()
++        else {
++            panic!("expected embeddings layer");
++        };
++        let Layer::EinSum(final_projection) = model
++            .graph()
++            .node(md.final_proj)
++            .unwrap()
++            .as_inner()
++            .unwrap()
++        else {
++            panic!("expected final projection layer");
++        };
++        let projection_weights = final_projection.constant_tensors[0].as_ref().unwrap();
++
++        assert_ne!(
++            CommitmentId::from(embeddings.mat.storage_key()),
++            CommitmentId::from(projection_weights.storage_key())
++        );
++        Ok(())
++    }
+ }
+diff --git a/zkml/src/quantization/llm_quant/gemma3.rs b/zkml/src/quantization/llm_quant/gemma3.rs
+index 29c0a59b..84425cae 100644
+--- a/zkml/src/quantization/llm_quant/gemma3.rs
++++ b/zkml/src/quantization/llm_quant/gemma3.rs
+@@ -2,10 +2,10 @@
+ 
+ use crate::{
+     graph::{Direction, NodeId},
+-    layers::{Layer, einsum::EinSum, transformer::embeddings::Embeddings},
++    layers::{einsum::EinSum, transformer::embeddings::Embeddings, Layer},
+     model::{
+         llm::Driver,
+-        transform::{ModelTransform, impls::gemma3transform::Gemma3Transform},
++        transform::{impls::gemma3transform::Gemma3Transform, ModelTransform},
+     },
+     parser::llm::models::gemma3::Gemma3,
+     quantization::llm_quant::rotation::{apply_hadamard, apply_hadamard_with_perm},
+@@ -14,7 +14,7 @@ use crate::{
+ 
+ use super::*;
+ 
+-use anyhow::{Result, anyhow, bail, ensure};
++use anyhow::{anyhow, bail, ensure, Result};
+ 
+ impl FPTransformModel for Gemma3 {
+     fn adapt_model(driver: Driver<f32>) -> Result<Driver<f32>> {
+@@ -23,6 +23,7 @@ impl FPTransformModel for Gemma3 {
+             md,
+             max_context,
+             padding_mode,
++            stop_on_eos,
+         } = driver;
+         let mut norm_adapted_model = Gemma3Transform.apply(model)?;
+ 
+@@ -177,6 +178,7 @@ impl FPTransformModel for Gemma3 {
+             md,
+             max_context,
+             padding_mode,
++            stop_on_eos,
+         })
+     }
+ }
+diff --git a/zkml/src/quantization/llm_quant/gpt2.rs b/zkml/src/quantization/llm_quant/gpt2.rs
+index 8c58e4cb..bad08aee 100644
+--- a/zkml/src/quantization/llm_quant/gpt2.rs
++++ b/zkml/src/quantization/llm_quant/gpt2.rs
+@@ -2,16 +2,16 @@
+ 
+ use crate::{
+     layers::{
+-        Layer,
+         einsum::EinSum,
+         transformer::{
+             embeddings::Embeddings,
+-            positional::{Positional, PositionalVariant, absolute::Absolute},
++            positional::{absolute::Absolute, Positional, PositionalVariant},
+         },
++        Layer,
+     },
+     model::{
+         llm::Driver,
+-        transform::{ModelTransform, impls::gpt2rmsnorm::GPT2RMSNorm},
++        transform::{impls::gpt2rmsnorm::GPT2RMSNorm, ModelTransform},
+     },
+     parser::llm::models::gpt2::GPT2,
+     quantization::llm_quant::rotation::{apply_hadamard, apply_hadamard_with_perm},
+@@ -20,7 +20,7 @@ use crate::{
+ 
+ use super::*;
+ 
+-use anyhow::{Result, anyhow, bail};
++use anyhow::{anyhow, bail, Result};
+ 
+ #[derive(Debug, Clone, Default, Copy)]
+ pub struct DuQuantQuantiser;
+@@ -32,6 +32,7 @@ impl FPTransformModel for GPT2 {
+             md,
+             max_context,
+             padding_mode,
++            stop_on_eos,
+         } = driver;
+         let mut norm_adapted_model = GPT2RMSNorm.apply(model)?;
+ 
+@@ -124,6 +125,7 @@ impl FPTransformModel for GPT2 {
+             md,
+             max_context,
+             padding_mode,
++            stop_on_eos,
+         })
+     }
+ }

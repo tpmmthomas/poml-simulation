@@ -1,0 +1,333 @@
+{
+  "version": "gpt2-deepprove-work-3",
+  "setup_max": 64,
+  "setup_digest": "5274ccb62e46245c4181633e5584091b4cb737d17dd3c066e32faa5a98157ab5",
+  "provenance": {
+    "source_sha256": "e33745c96b7210c758d07de88264509d1ac3f0bafd0718ff4e6611ad46587b9f",
+    "deepprove_commit": "9d1a53e2ef49ffa2c902b8689cd3c58057a4e662",
+    "crypto_commit": "22e8e93cd0f94a7638616a1ae22190feb0a6b275",
+    "setup_seed": 20260910,
+    "token_seed": 20260910,
+    "quantization_bits": 12,
+    "binary_sha256": "7965011dc68b8c5db2edd04313c516b9032c8f133cd60e332f04e82a1bd50abc",
+    "cuda": false,
+    "threads": 8,
+    "pairs": [
+      [
+        2,
+        2
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        16,
+        16
+      ],
+      [
+        32,
+        32
+      ],
+      [
+        63,
+        1
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        8,
+        9
+      ],
+      [
+        16,
+        17
+      ],
+      [
+        32,
+        32
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ]
+    ],
+    "accounting_sha256": "bb1d41ecb2544e32828a4a0879dd6cf85689838f8e4885667bb02e36bfc063fd"
+  },
+  "proof_profiles": {
+    "4": {
+      "field_rlc_mac": 292345098,
+      "logup_column_cell": 4807944,
+      "logup_fraction_merge": 3706916,
+      "lookup_limb": 2610176,
+      "mle_fold": 68494694,
+      "msm_1024": 2,
+      "msm_1048576": 3,
+      "msm_128": 1,
+      "msm_131072": 1,
+      "msm_16": 865,
+      "msm_16384": 73,
+      "msm_2": 1,
+      "msm_2048": 1,
+      "msm_256": 2881,
+      "msm_262144": 4,
+      "msm_32": 1,
+      "msm_32768": 1,
+      "msm_4": 196,
+      "msm_4096": 387,
+      "msm_512": 1,
+      "msm_524288": 1,
+      "msm_64": 1,
+      "msm_65536": 5,
+      "msm_8": 1,
+      "msm_8192": 1,
+      "pcs_division": 3145725,
+      "pcs_fold": 1048574,
+      "pcs_horner": 6291450,
+      "sumcheck_factor": 2140756588,
+      "sumcheck_fold": 391453456,
+      "sumcheck_round": 10377,
+      "sumcheck_term": 1125549212,
+      "transcript_challenge": 19869,
+      "transcript_output_byte": 317904,
+      "transcript_points": 4837,
+      "transcript_scalars": 66826
+    },
+    "8": {
+      "field_rlc_mac": 296618518,
+      "logup_column_cell": 9081360,
+      "logup_fraction_merge": 7122732,
+      "lookup_limb": 5238784,
+      "mle_fold": 68696079,
+      "msm_1024": 2,
+      "msm_1048576": 3,
+      "msm_128": 1,
+      "msm_131072": 1,
+      "msm_16": 1,
+      "msm_16384": 1,
+      "msm_2": 1,
+      "msm_2048": 1,
+      "msm_256": 1,
+      "msm_262144": 1,
+      "msm_32": 1,
+      "msm_32768": 73,
+      "msm_4": 1,
+      "msm_4096": 14,
+      "msm_512": 2881,
+      "msm_524288": 4,
+      "msm_64": 865,
+      "msm_65536": 5,
+      "msm_8": 196,
+      "msm_8192": 374,
+      "pcs_division": 3145725,
+      "pcs_fold": 1048574,
+      "pcs_horner": 6291450,
+      "sumcheck_factor": 2379606084,
+      "sumcheck_fold": 416688149,
+      "sumcheck_round": 12188,
+      "sumcheck_term": 1224924189,
+      "transcript_challenge": 22160,
+      "transcript_output_byte": 354560,
+      "transcript_points": 4837,
+      "transcript_scalars": 74367
+    },
+    "16": {
+      "field_rlc_mac": 305248302,
+      "logup_column_cell": 17711136,
+      "logup_fraction_merge": 14009660,
+      "lookup_limb": 10551296,
+      "mle_fold": 69098848,
+      "msm_1024": 2882,
+      "msm_1048576": 6,
+      "msm_128": 1,
+      "msm_131072": 1,
+      "msm_16": 196,
+      "msm_16384": 374,
+      "msm_2": 1,
+      "msm_2048": 1,
+      "msm_256": 865,
+      "msm_262144": 1,
+      "msm_32": 1,
+      "msm_32768": 1,
+      "msm_4": 1,
+      "msm_4096": 14,
+      "msm_512": 1,
+      "msm_524288": 1,
+      "msm_64": 1,
+      "msm_65536": 77,
+      "msm_8": 1,
+      "msm_8192": 1,
+      "pcs_division": 3145725,
+      "pcs_fold": 1048574,
+      "pcs_horner": 6291450,
+      "sumcheck_factor": 2862209244,
+      "sumcheck_fold": 467594346,
+      "sumcheck_round": 14183,
+      "sumcheck_term": 1425612286,
+      "transcript_challenge": 24635,
+      "transcript_output_byte": 394160,
+      "transcript_points": 4837,
+      "transcript_scalars": 82644
+    },
+    "32": {
+      "field_rlc_mac": 322872414,
+      "logup_column_cell": 35335232,
+      "logup_fraction_merge": 28004700,
+      "lookup_limb": 21397504,
+      "mle_fold": 69904385,
+      "msm_1024": 866,
+      "msm_1048576": 9,
+      "msm_128": 1,
+      "msm_131072": 73,
+      "msm_16": 1,
+      "msm_16384": 1,
+      "msm_2": 1,
+      "msm_2048": 2881,
+      "msm_256": 1,
+      "msm_262144": 1,
+      "msm_32": 196,
+      "msm_32768": 375,
+      "msm_4": 1,
+      "msm_4096": 14,
+      "msm_512": 1,
+      "msm_524288": 1,
+      "msm_64": 1,
+      "msm_65536": 5,
+      "msm_8": 1,
+      "msm_8192": 1,
+      "pcs_division": 3145725,
+      "pcs_fold": 1048574,
+      "pcs_horner": 6291450,
+      "sumcheck_factor": 3847289182,
+      "sumcheck_fold": 568059239,
+      "sumcheck_round": 16362,
+      "sumcheck_term": 1830276325,
+      "transcript_challenge": 27298,
+      "transcript_output_byte": 436768,
+      "transcript_points": 4841,
+      "transcript_scalars": 91692
+    },
+    "64": {
+      "field_rlc_mac": 359349438,
+      "logup_column_cell": 71812224,
+      "logup_fraction_merge": 56879516,
+      "lookup_limb": 43974656,
+      "mle_fold": 71515458,
+      "msm_1024": 2,
+      "msm_1048576": 15,
+      "msm_128": 1,
+      "msm_131072": 1,
+      "msm_16": 1,
+      "msm_16384": 1,
+      "msm_2": 1,
+      "msm_2048": 1,
+      "msm_256": 1,
+      "msm_262144": 73,
+      "msm_32": 1,
+      "msm_32768": 1,
+      "msm_4": 1,
+      "msm_4096": 3758,
+      "msm_512": 1,
+      "msm_524288": 1,
+      "msm_64": 196,
+      "msm_65536": 378,
+      "msm_8": 1,
+      "msm_8192": 1,
+      "pcs_division": 3145725,
+      "pcs_fold": 1048574,
+      "pcs_horner": 6291450,
+      "sumcheck_factor": 5870966822,
+      "sumcheck_fold": 775184279,
+      "sumcheck_round": 18725,
+      "sumcheck_term": 2662963299,
+      "transcript_challenge": 30146,
+      "transcript_output_byte": 482336,
+      "transcript_points": 4846,
+      "transcript_scalars": 101415
+    }
+  },
+  "validation": {
+    "trials": 14,
+    "pairs": [
+      [
+        2,
+        2
+      ],
+      [
+        4,
+        4
+      ],
+      [
+        8,
+        8
+      ],
+      [
+        16,
+        16
+      ],
+      [
+        32,
+        32
+      ],
+      [
+        63,
+        1
+      ],
+      [
+        3,
+        4
+      ],
+      [
+        8,
+        9
+      ],
+      [
+        16,
+        17
+      ],
+      [
+        32,
+        32
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        1
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ]
+    ],
+    "boundary_trials": 7,
+    "non_boundary_trials": 7
+  },
+  "weights": null,
+  "validation_tolerance": 0.05,
+  "sha256": "6d62b1c6aae20268df847bcf0e1b7a213b97e5458b5a3bd751e696edc0e75c5d"
+}

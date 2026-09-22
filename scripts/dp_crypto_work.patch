@@ -1,0 +1,591 @@
+diff --git a/dp-crypto/Cargo.toml b/dp-crypto/Cargo.toml
+index 6544a2f..1275df9 100644
+--- a/dp-crypto/Cargo.toml
++++ b/dp-crypto/Cargo.toml
+@@ -4,6 +4,7 @@ version.workspace = true
+ edition.workspace = true
+ 
+ [dependencies]
++serde_json = "1.0"
+ ark-bn254.workspace = true
+ ark-std.workspace = true
+ ark-ec.workspace = true
+diff --git a/dp-crypto/src/arkyper/hyperkzg_gpu.rs b/dp-crypto/src/arkyper/hyperkzg_gpu.rs
+index a97a29f..e6a5fe2 100644
+--- a/dp-crypto/src/arkyper/hyperkzg_gpu.rs
++++ b/dp-crypto/src/arkyper/hyperkzg_gpu.rs
+@@ -19,8 +19,8 @@ use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
+ use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
+ use super::transcript::Transcript;
+ use super::{
+-    kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
+-    HyperKZGSRS,
++    kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGSRS,
++    HyperKZGVerifierKey,
+ };
+ use crate::arkyper::interface::CommitmentScheme;
+ use crate::poly::dense::DensePolynomial;
+@@ -112,6 +112,7 @@ pub fn gpu_batch_commit(
+         .map(|poly| {
+             let coeffs = poly.evals_ref();
+             let msm_size = coeffs.len();
++            crate::work::record(serde_json::json!({"op": "msm", "length": msm_size}));
+             let scalars_bigint = Arc::new(convert_scalars_to_bigint(coeffs));
+             let bases_slice = Arc::new(bases_gpu[..msm_size].to_vec());
+ 
+@@ -215,6 +216,7 @@ pub fn cpu_batch_commit(
+         .map(|poly| {
+             let coeffs = poly.evals_ref();
+             let msm_size = coeffs.len();
++            crate::work::record(serde_json::json!({"op": "msm", "length": msm_size}));
+             G1Projective::msm(&g1_powers[..msm_size], coeffs)
+                 .map_err(|e| anyhow::anyhow!("CPU MSM error: {e}"))
+         })
+@@ -389,6 +391,9 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
+         _: Option<Self::OpeningProofHint>,
+         transcript: &mut ProofTranscript,
+     ) -> anyhow::Result<Self::Proof> {
++        crate::work::record(
++            serde_json::json!({"op": "pcs_open", "length": poly.len(), "variables": opening_point.len()}),
++        );
+         let eval = poly.evaluate(opening_point)?;
+         Self::open_gpu(setup, poly, opening_point, &eval, transcript)
+     }
+@@ -402,7 +407,14 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
+         commitment: &Self::Commitment,
+     ) -> anyhow::Result<()> {
+         // Use the existing verify implementation
+-        super::HyperKZG::<Bn254>::verify(setup, commitment, opening_point, opening, proof, transcript)
++        super::HyperKZG::<Bn254>::verify(
++            setup,
++            commitment,
++            opening_point,
++            opening,
++            proof,
++            transcript,
++        )
+     }
+ 
+     fn protocol_name() -> &'static [u8] {
+@@ -590,12 +602,26 @@ mod tests {
+ 
+             // Verify both proofs
+             let mut verify_transcript = Blake3Transcript::new(b"TestOpen");
+-            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &cpu_proof, &mut verify_transcript)
+-                .expect("CPU proof verification failed");
++            HyperKZG::<Bn254>::verify(
++                &vk,
++                &comm,
++                &point,
++                &eval,
++                &cpu_proof,
++                &mut verify_transcript,
++            )
++            .expect("CPU proof verification failed");
+ 
+             let mut verify_transcript = Blake3Transcript::new(b"TestOpen");
+-            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut verify_transcript)
+-                .expect("GPU proof verification failed");
++            HyperKZG::<Bn254>::verify(
++                &vk,
++                &comm,
++                &point,
++                &eval,
++                &gpu_proof,
++                &mut verify_transcript,
++            )
++            .expect("GPU proof verification failed");
+         }
+     }
+ 
+@@ -623,8 +649,7 @@ mod tests {
+             let (pk, vk) = HyperKZGGpu::<Bn254>::test_setup(&mut rng, ell);
+ 
+             // CPU commit (using original HyperKZG)
+-            let (cpu_comm, _) =
+-                HyperKZG::<Bn254>::commit(&pk, &poly).expect("CPU commit failed");
++            let (cpu_comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("CPU commit failed");
+ 
+             // GPU commit (using HyperKZGGpu)
+             let (gpu_comm, _) =
+diff --git a/dp-crypto/src/arkyper/mod.rs b/dp-crypto/src/arkyper/mod.rs
+index 63e4d6a..fba1afc 100644
+--- a/dp-crypto/src/arkyper/mod.rs
++++ b/dp-crypto/src/arkyper/mod.rs
+@@ -11,12 +11,12 @@
+ use crate::arkyper::transcript::AppendToTranscript;
+ use crate::poly::dense::DensePolynomial;
+ use anyhow::{bail, ensure};
+-use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
+-use ark_poly_commit::kzg10::{KZG10, Powers, UniversalParams, VerifierKey};
++use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup};
++use ark_poly_commit::kzg10::{Powers, UniversalParams, VerifierKey, KZG10};
+ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+ use ark_std::rand::Rng;
+ use ark_std::rand::RngCore;
+-use ark_std::{One, Zero, cfg_iter, cfg_iter_mut};
++use ark_std::{cfg_iter, cfg_iter_mut, One, Zero};
+ use rayon::iter::IndexedParallelIterator;
+ use rayon::iter::IntoParallelIterator;
+ use rayon::iter::IntoParallelRefIterator;
+@@ -501,6 +501,9 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
+         _: Option<Self::OpeningProofHint>,
+         transcript: &mut ProofTranscript,
+     ) -> anyhow::Result<Self::Proof> {
++        crate::work::record(
++            serde_json::json!({"op": "pcs_open", "length": poly.len(), "variables": opening_point.len()}),
++        );
+         let eval = poly.evaluate(opening_point)?;
+         HyperKZG::<P>::open(setup, poly, opening_point, &eval, transcript)
+     }
+@@ -534,8 +537,8 @@ mod tests {
+     use ark_bn254::{Bn254, Fr};
+     use ark_ff::{AdditiveGroup, Field};
+     use ark_std::{
++        rand::{thread_rng, SeedableRng},
+         UniformRand,
+-        rand::{SeedableRng, thread_rng},
+     };
+     use itertools::Itertools;
+ 
+@@ -649,7 +652,7 @@ mod gpu_tests {
+     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
+     use ark_bn254::{Bn254, Fr, G1Affine};
+     use ark_ec::CurveGroup;
+-    use ark_std::{UniformRand, rand::SeedableRng};
++    use ark_std::{rand::SeedableRng, UniformRand};
+ 
+     #[test]
+     fn test_msm_gpu_vs_cpu() {
+diff --git a/dp-crypto/src/arkyper/msm.rs b/dp-crypto/src/arkyper/msm.rs
+index 4875d28..90585bc 100644
+--- a/dp-crypto/src/arkyper/msm.rs
++++ b/dp-crypto/src/arkyper/msm.rs
+@@ -1,6 +1,6 @@
+ use std::borrow::Borrow;
+ 
+-use ark_ec::{AffineRepr, CurveGroup, scalar_mul::variable_base::VariableBaseMSM};
++use ark_ec::{scalar_mul::variable_base::VariableBaseMSM, AffineRepr, CurveGroup};
+ use ark_ff::PrimeField;
+ use ark_std::cfg_iter;
+ #[cfg(feature = "parallel")]
+@@ -42,6 +42,13 @@ pub fn batch_poly_msm_cpu<'a, A: AffineRepr>(
+     g1_powers: &[A],
+     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
+ ) -> anyhow::Result<Vec<A::Group>> {
++    if crate::work::enabled() {
++        for p in polys {
++            crate::work::record(
++                serde_json::json!({"op": "msm", "length": p.borrow().evals_ref().len()}),
++            );
++        }
++    }
+     let coeffs = polys
+         .iter()
+         .map(|p| p.borrow().evals_ref())
+@@ -63,7 +70,15 @@ pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
+ ) -> anyhow::Result<Vec<A::Group>> {
+     use std::sync::Arc;
+ 
+-    use super::gpu_msm::{GPU_MSM, convert_bases_to_gpu, convert_scalars_to_bigint};
++    use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
++
++    if crate::work::enabled() {
++        for p in polys {
++            crate::work::record(
++                serde_json::json!({"op": "msm", "length": p.borrow().evals_ref().len()}),
++            );
++        }
++    }
+ 
+     let bases: &[ark_bn254::G1Affine] = unsafe { std::mem::transmute(g1_powers) };
+     let bases_gpu = Arc::new(convert_bases_to_gpu(bases));
+diff --git a/dp-crypto/src/arkyper/transcript/blake3.rs b/dp-crypto/src/arkyper/transcript/blake3.rs
+index 5e5182c..f5da85d 100644
+--- a/dp-crypto/src/arkyper/transcript/blake3.rs
++++ b/dp-crypto/src/arkyper/transcript/blake3.rs
+@@ -15,10 +15,12 @@ impl Blake3Transcript {
+ 
+ impl Transcript for Blake3Transcript {
+     fn append_bytes(&mut self, bytes: &[u8]) {
++        crate::work::record(serde_json::json!({"op": "transcript_append", "bytes": bytes.len()}));
+         self.state.update(bytes);
+     }
+ 
+     fn challenge_bytes(&mut self, out: &mut [u8]) {
++        crate::work::record(serde_json::json!({"op": "transcript_challenge", "bytes": out.len()}));
+         self.state.finalize_xof().fill(out);
+     }
+ }
+@@ -29,7 +31,7 @@ mod test {
+     use ark_std::rand::thread_rng;
+     use itertools::Itertools;
+ 
+-    use crate::arkyper::transcript::{Transcript, blake3::Blake3Transcript};
++    use crate::arkyper::transcript::{blake3::Blake3Transcript, Transcript};
+     type F = ark_bn254::Fq;
+     type A = ark_bn254::G1Affine;
+ 
+diff --git a/dp-crypto/src/arkyper/transcript/mod.rs b/dp-crypto/src/arkyper/transcript/mod.rs
+index 6b74e9f..a6c5a05 100644
+--- a/dp-crypto/src/arkyper/transcript/mod.rs
++++ b/dp-crypto/src/arkyper/transcript/mod.rs
+@@ -16,6 +16,9 @@ pub trait Transcript {
+     fn challenge_bytes(&mut self, out: &mut [u8]);
+ 
+     fn append_scalars<F: PrimeField>(&mut self, scalars: &[impl Borrow<F>]) {
++        crate::work::record(
++            serde_json::json!({"op": "transcript_scalars", "count": scalars.len()}),
++        );
+         for scalar in scalars {
+             let mut buff = unsafe_allocate_zero_vec(F::MODULUS_BIT_SIZE as usize / 8);
+             scalar
+@@ -44,6 +47,7 @@ pub trait Transcript {
+     }
+ 
+     fn append_points<A: AffineRepr>(&mut self, points: &[impl Borrow<A>]) {
++        crate::work::record(serde_json::json!({"op": "transcript_points", "count": points.len()}));
+         for point in points {
+             let mut buff = unsafe_allocate_zero_vec(
+                 <A::BaseField as Field>::BasePrimeField::MODULUS_BIT_SIZE as usize / 8,
+diff --git a/dp-crypto/src/lib.rs b/dp-crypto/src/lib.rs
+index b7c11e1..1c2dab9 100644
+--- a/dp-crypto/src/lib.rs
++++ b/dp-crypto/src/lib.rs
+@@ -3,6 +3,7 @@
+ pub mod arkyper;
+ pub mod poly;
+ mod sumcheck;
++pub mod work;
+ 
+ pub use sumcheck::*;
+ 
+diff --git a/dp-crypto/src/poly/dense.rs b/dp-crypto/src/poly/dense.rs
+index c7e7bc1..db9c93d 100644
+--- a/dp-crypto/src/poly/dense.rs
++++ b/dp-crypto/src/poly/dense.rs
+@@ -104,7 +104,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+         }
+     }
+ 
+-    pub fn shallow_clone<'b>(&'a self) -> DensePolynomial<'b, F> where 'a: 'b {
++    pub fn shallow_clone<'b>(&'a self) -> DensePolynomial<'b, F>
++    where
++        'a: 'b,
++    {
+         Self {
+             num_vars: self.num_vars,
+             len: self.len,
+@@ -231,22 +234,52 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+     }
+ 
+     pub fn fix_high_variables_in_place(&mut self, vars: &[F]) {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": vars.len()}),
++            );
++        }
++
+         self.fix_variables_in_place(vars.iter().rev(), FixOrder::HighToLow, false)
+     }
+ 
+     pub fn fix_high_variables_in_place_parallel(&mut self, vars: &[F]) {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": vars.len()}),
++            );
++        }
++
+         self.fix_variables_in_place(vars.iter().rev(), FixOrder::HighToLow, true)
+     }
+ 
+     pub fn fix_low_variables_in_place(&mut self, vars: &[F]) {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": vars.len()}),
++            );
++        }
++
+         self.fix_variables_in_place(vars.iter(), FixOrder::LowToHigh, false);
+     }
+ 
+     pub fn fix_low_variables_in_place_parallel(&mut self, vars: &[F]) {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": vars.len()}),
++            );
++        }
++
+         self.fix_variables_in_place(vars.iter(), FixOrder::LowToHigh, true);
+     }
+ 
+     pub fn fix_high_variables(&self, vars: &[F]) -> Self {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": 1}),
++            );
++        }
++
+         if vars.is_empty() {
+             return self.clone();
+         }
+@@ -258,6 +291,12 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+     }
+ 
+     pub fn fix_high_variables_parallel(&self, vars: &[F]) -> Self {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": 1}),
++            );
++        }
++
+         if vars.is_empty() {
+             return self.clone();
+         }
+@@ -269,6 +308,12 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+     }
+ 
+     pub fn fix_low_variables(&self, vars: &[F]) -> Self {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": 1}),
++            );
++        }
++
+         if vars.is_empty() {
+             return self.clone();
+         }
+@@ -280,6 +325,12 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+     }
+ 
+     pub fn fix_low_variables_parallel(&self, vars: &[F]) -> Self {
++        if !vars.is_empty() {
++            crate::work::record(
++                serde_json::json!({"op": "mle_fix", "length": self.len(), "variables": 1}),
++            );
++        }
++
+         if vars.is_empty() {
+             return self.clone();
+         }
+@@ -582,6 +633,8 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+ 
+     // returns Z(r) in O(n) time
+     pub fn evaluate(&self, r: &[F]) -> anyhow::Result<F> {
++        crate::work::record(serde_json::json!({"op": "mle_evaluate", "length": self.len()}));
++
+         ensure!(
+             r.len() == self.num_vars(),
+             "r len() = {} vs num_vars = {}",
+@@ -932,6 +985,12 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
+ 
+     #[tracing::instrument(skip_all)]
+     pub fn linear_combination(polynomials: &[&Self], coefficients: &[F]) -> Self {
++        if crate::work::enabled() {
++            crate::work::record(
++                serde_json::json!({"op": "poly_rlc", "lengths": polynomials.iter().map(|p| p.len()).collect::<Vec<_>>()}),
++            );
++        }
++
+         debug_assert_eq!(polynomials.len(), coefficients.len());
+ 
+         let max_length = polynomials.iter().map(|poly| poly.len()).max().unwrap();
+@@ -1026,9 +1085,9 @@ pub(crate) const fn swap_bits(x: usize, a: usize, b: usize, n: usize) -> usize {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use crate::poly::{Math, challenge};
++    use crate::poly::{challenge, Math};
+     use ark_ff::{AdditiveGroup, PrimeField};
+-    use ark_std::rand::{Rng, SeedableRng, thread_rng};
++    use ark_std::rand::{thread_rng, Rng, SeedableRng};
+     use itertools::Itertools;
+     use rand_chacha::ChaCha20Rng;
+     use rstest::rstest;
+diff --git a/dp-crypto/src/sumcheck/prover.rs b/dp-crypto/src/sumcheck/prover.rs
+index 8f55464..34b18a8 100644
+--- a/dp-crypto/src/sumcheck/prover.rs
++++ b/dp-crypto/src/sumcheck/prover.rs
+@@ -9,12 +9,12 @@ use sumcheck_macro::sumcheck_code_gen;
+ 
+ use crate::{
+     arkyper::transcript::Transcript,
+-    extrapolate::{ExtrapolationCache, extrapolate_from_table},
++    extrapolate::{extrapolate_from_table, ExtrapolationCache},
+     monomial::Term,
+     structs::{IOPProof, IOPProverMessage, IOPProverState},
+     util::{
+-        AdditiveArray, AdditiveVec, ceil_log2, largest_even_below, merge_sumcheck_polys,
+-        merge_sumcheck_prover_state,
++        ceil_log2, largest_even_below, merge_sumcheck_polys, merge_sumcheck_prover_state,
++        AdditiveArray, AdditiveVec,
+     },
+     virtual_poly::{MonomialTerms, VirtualPolynomial},
+     virtual_polys::{PolyMeta, VirtualPolynomials},
+@@ -125,17 +125,74 @@ impl<'a, F: PrimeField> IOPProverState<'a, F> {
+         assert!(max_thread_id.is_power_of_two());
+ 
+         let log2_max_thread_id = ceil_log2(max_thread_id); // do not support SIZE not power of 2
+-        assert!(
+-            polys
+-                .iter()
+-                .map(|poly| (poly.aux_info.max_num_variables, poly.aux_info.max_degree))
+-                .all_equal()
+-        );
++        assert!(polys
++            .iter()
++            .map(|poly| (poly.aux_info.max_num_variables, poly.aux_info.max_degree))
++            .all_equal());
+         let (num_variables, max_degree) = (
+             polys[0].aux_info.max_num_variables,
+             polys[0].aux_info.max_degree,
+         );
+ 
++        if crate::work::enabled() {
++            // Recover logical domains before worker partitioning. Small MLEs
++            // are replicated, while Normal MLEs are split across workers.
++            let mle_variables: Vec<_> = polys[0]
++                .flattened_ml_extensions
++                .iter()
++                .zip(&poly_meta)
++                .map(|(mle, meta)| {
++                    mle.num_vars()
++                        + if matches!(meta, PolyMeta::Normal) {
++                            log2_max_thread_id
++                        } else {
++                            0
++                        }
++                })
++                .collect();
++            let mle_supports: Vec<_> = polys[0]
++                .flattened_ml_extensions
++                .iter()
++                .zip(&poly_meta)
++                .enumerate()
++                .map(|(i, (mle, meta))| {
++                    let length = if matches!(meta, PolyMeta::Normal) {
++                        let lengths: Vec<_> = polys
++                            .iter()
++                            .map(|p| p.flattened_ml_extensions[i].unpadded_len())
++                            .collect();
++                        crate::work::prefix_len(1 << mle.num_vars(), &lengths)
++                    } else {
++                        mle.unpadded_len()
++                    };
++                    length.ilog2() as usize
++                })
++                .collect();
++            let monomials: Vec<_> = polys[0]
++                .products
++                .iter()
++                .flat_map(|p| {
++                    p.terms.iter().map(|term| {
++                        let variables = mle_variables[term.product[0]];
++                        assert!(term.product.iter().all(|&i| mle_variables[i] == variables));
++                        let support = term.product.iter().map(|&i| mle_supports[i]).min().unwrap();
++                        [variables, support, term.product.len()]
++                    })
++                })
++                .collect();
++            let degrees: Vec<_> = polys[0]
++                .products
++                .iter()
++                .flat_map(|p| p.terms.iter().map(|t| t.product.len()))
++                .collect();
++            crate::work::record(serde_json::json!({
++                "op": "sumcheck", "variables": num_variables + log2_max_thread_id,
++                "degree": max_degree, "terms": degrees,
++                "mles": polys[0].flattened_ml_extensions.len(),
++                "mle_variables": mle_variables, "mle_supports": mle_supports, "monomials": monomials,
++            }));
++        }
++
+         let min_degree = polys[0]
+             .products
+             .iter()
+diff --git a/dp-crypto/src/work.rs b/dp-crypto/src/work.rs
+new file mode 100644
+--- /dev/null
++++ b/dp-crypto/src/work.rs
+@@ -0,0 +1,81 @@
++//! Optional shape-only operation ledger. Never records witness values or timing.
++use serde_json::{json, Value};
++use std::sync::{
++    atomic::{AtomicBool, Ordering},
++    Mutex,
++};
++
++static ENABLED: AtomicBool = AtomicBool::new(false);
++static EVENTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
++static PHASE: Mutex<&'static str> = Mutex::new("excluded");
++
++/// Return whether an online trial is currently being recorded.
++pub fn enabled() -> bool {
++    ENABLED.load(Ordering::Relaxed)
++}
++
++/// Start one online trial; setup and verification must be outside this scope.
++pub fn begin() {
++    EVENTS.lock().unwrap().clear();
++    *PHASE.lock().unwrap() = "inference";
++    ENABLED.store(true, Ordering::Relaxed);
++}
++
++/// Label subsequent events after the preceding phase has finished.
++pub fn phase(name: &'static str) {
++    *PHASE.lock().unwrap() = name;
++}
++
++/// Append a structural event only while a trial is being metered.
++pub fn record(mut event: Value) {
++    if !enabled() {
++        return;
++    }
++    event["phase"] = json!(*PHASE.lock().unwrap());
++    EVENTS.lock().unwrap().push(event);
++}
++
++/// Disable recording before verification and return this trial's events.
++pub fn finish() -> Vec<Value> {
++    ENABLED.store(false, Ordering::Relaxed);
++    std::mem::take(&mut *EVENTS.lock().unwrap())
++}
++
++/// Fingerprint the serialized setup used by one metering run.
++pub fn digest(bytes: &[u8]) -> String {
++    blake3::hash(bytes).to_hex().to_string()
++}
++
++/// Recover a power-of-two stored prefix before zero-padded worker splitting.
++/// Empty suffix workers contain a one-element zero placeholder; those entries
++/// are representation overhead and must not inflate the reference domain.
++pub(crate) fn prefix_len(chunk_size: usize, lengths: &[usize]) -> usize {
++    assert!(chunk_size > 1 && chunk_size.is_power_of_two() && !lengths.is_empty());
++    let full = lengths.iter().take_while(|&&n| n == chunk_size).count();
++    let result = if full == 0 {
++        lengths[0]
++    } else {
++        full * chunk_size
++    };
++    assert!(result.is_power_of_two());
++    result
++}
++
++#[cfg(test)]
++mod tests {
++    #[test]
++    fn recovers_stored_prefix_independent_of_worker_count() {
++        for logical_bits in 1..=20 {
++            for stored_bits in 0..=logical_bits {
++                for worker_bits in 0..logical_bits.min(4) {
++                    let chunk = 1 << (logical_bits - worker_bits);
++                    let stored = 1usize << stored_bits;
++                    let parts: Vec<_> = (0..1 << worker_bits)
++                        .map(|i| stored.saturating_sub(i * chunk).min(chunk).max(1))
++                        .collect();
++                    assert_eq!(super::prefix_len(chunk, &parts), stored);
++                }
++            }
++        }
++    }
++}
