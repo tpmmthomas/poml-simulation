@@ -1,557 +1,252 @@
-# Running the Experiments
+# Running the paper experiments
 
-The current paper evaluation uses the three commands documented in
-[features/llm_poml_experiments.md](features/llm_poml_experiments.md). The older
-EZKL/DDPM commands below remain available for implementation regression tests,
-but they are no longer the main paper experiments.
+Run from the repository root in the environment described in the [README](../README.md).
+Use a new output directory for every campaign. Results, models and prover setups
+are intentionally not committed. These commands implement the current paper's
+methods; rerunning them does not promise its previously reported numbers.
 
-This guide covers every step needed to reproduce the PoML vs. PoW simulator
-experiments (Exp 1–2), the Stable Diffusion appendix experiments (Exp 3–4),
-the uniform-fee collision experiment (Exp 5), and the GPT-2 LLM collision
-experiments described in [gpt2_plan.md](gpt2_plan.md).
-For a description of what each experiment measures, see
-[experiments/README.md](../experiments/README.md).
+## Fresh measurements
 
----
-
-## Prerequisites
-
-Complete the simulation setup before running any experiment:
+Build the GPT-2 worker first, then collect genuine inference/proof pairs:
 
 ```bash
-pip install -e ".[dev]"
-bash scripts/setup_model.sh   # export ONNX model + generate EZKL artifacts (one-time)
+python experiments/measure_pairs.py --backend gpt2 --device cuda:0 \
+  --queries 32 --replicates 2 --max-output 32 \
+  --output experiments/results/measurements
 ```
 
-The GPT-2 driver has separate optional dependencies and does not require EZKL:
+The default input source is WikiText-2. Prompt lengths cycle through 8, 16, 24,
+32 tokens; generated length is actual EOS/cap length, never the requested cap.
+Decoding cap is bounded by `64 - N` and the query's maximum affordable fee.
+Each replicate gets a new binding, indexed inference VRFs, inference and proof.
+Setup and verification are excluded from the recorded service duration. Setup
+is shared by the physical worker, not rebuilt for every attempt.
+
+`completed.jsonl` is appended after each verified pair; `measurements.json` is
+written only after the bank completes. It records the model/setup identity,
+actual N/K, prompt digest, proof digest, freshness flags, duration and C. GPT-2
+also keeps proof artifacts. Do not label synthetic durations as measurements.
+For EZKL use `--backend diffusion --artifacts <setup-directory>`; fixed-shape
+pairs have `C=1` and cannot calibrate the GPT-2 operation-weight fit.
+
+The paper runs on one host; contention, prover versions and hardware affect
+timings. Record the host and competing workloads for a numerical campaign.
+
+## Liveness and block-generation stability
+
+Default dimensions: 4 miners, pool 256, 50 blocks, calibration target 300 seconds.
+Difficulty is estimated as `D/2^256 = sum(T) / (M × target × sum(C))`. This is a
+rare-success calibration approximation; the report always retains actual
+observed intervals. It does not force the resulting mean to equal the target.
+
+Measured replay (the default execution mode) plus actual CPU hashing:
 
 ```bash
-pip install -e ".[dev,llm]"
+python experiments/liveness.py \
+  --measurements experiments/results/measurements/measurements.json \
+  --output experiments/results/liveness
 ```
 
----
+This resamples **joint** `(T,C)` pairs from the bank, applies the exact rounded
+complexity threshold to an independent 256-bit draw, and schedules uniform
+query permutations. The replay does not re-prove a virtual miner's challenge.
+Pools replenish as needed for liveness; the fixed-pool waste experiment below
+does not replenish. The actual PoW baseline calibrates multiple CPU processes
+and performs double-SHA-256 over parent-bound 80-byte headers. It is a
+Bitcoin-style hash lottery, not Bitcoin transaction/network consensus. Fifty
+blocks at a 300-second target take hours of actual hashing.
 
-## Simulator Experiments (Exp 1 & 2)
-
-### 1. Calibrate PoW difficulty (~10 s)
-
-Must be run before Exp 1 or 2. Benchmarks local SHA-256 throughput and writes
-a difficulty target to `experiments/results/pow_calibration.json`.
+To run the full protocol with **fresh model proofs on every attempt**:
 
 ```bash
-python experiments/pow_calibrate.py --target 300 --miners 4
+python experiments/liveness.py --execution fresh --backend gpt2 --device cuda:0 \
+  --measurements experiments/results/measurements/measurements.json \
+  --setup-directory experiments/results/measurements/proofs/setup \
+  --max-output 32 --output experiments/results/liveness-fresh
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--target` | `300` | Expected PoW block time in seconds |
-| `--miners` | `4` | Number of miner processes to simulate |
+Calibration and fresh execution must have the same backend/model/schedule
+identity. The full simulator checks signed queries, proof/seed chaining,
+ciphertext lotteries and fee settlement. Physical proving is serialized and
+virtual miners advance by measured durations; this is not four independently
+running GPU processes. Physical work performed for virtually canceled attempts
+is reported separately. Verification and network latency are not virtual service
+time. Fresh mode replenishes the pending pool between blocks.
 
-### 2. Experiment 1 — Block-time stability (~8 h for full run)
-
-Runs 50-block PoML and 50-block PoW races at a 300 s block-time target and
-reports mean / min / max / stdev / variance.
+For a quick plotting and event-loop check:
 
 ```bash
-# Smoke test (fast, ~2 blocks each)
-python experiments/exp1_block_time_stability.py --smoke
-
-# Full run
-python experiments/exp1_block_time_stability.py --blocks 50 --target 300
+python experiments/liveness.py --smoke --blocks 3 --pow-mode poisson \
+  --output experiments/results/liveness-smoke
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--blocks` | `50` | Number of blocks per mechanism |
-| `--target` | `300` | Expected block time in seconds |
-| `--smoke` | off | Run 2 blocks each for a quick sanity check |
+`--pow-mode poisson` is explicitly a statistical exponential baseline; it does
+not hash. Outputs include block intervals, cancellation/exhaustion status,
+mean/sample SD, the timing samples, an OLS complexity/time fit and a PDF figure.
+The OLS line is a descriptive fit on those samples, not held-out validation.
 
-**Outputs**
-
-| File | Contents |
-|------|----------|
-| `results/exp1_poml_blocks.csv` | One row per PoML block with elapsed time |
-| `results/exp1_pow_blocks.csv` | One row per PoW block with `miner_id`, `nonce` |
-| `results/exp1_summary.csv` | One row per mechanism: mean / min / max / stdev / variance |
-| `results/logs/exp1_poml_*.log` | Full PoML simulation log |
-
-### 3. Experiment 2 — Wasted work (~5 h for full run)
-
-Sweeps over expected block times (200 / 300 / 400 s) and miner counts (2 / 4 / 8),
-running 10 blocks per configuration. Reports `wasted_ratio` (orphaned proofs /
-total proofs) for each setting.
+## Wasted completed work
 
 ```bash
-# Smoke test
-python experiments/exp2_wasted_work.py --smoke
-
-# Full run
-python experiments/exp2_wasted_work.py --blocks 10
+python experiments/wasted_work.py \
+  --measurements experiments/results/measurements/measurements.json \
+  --output experiments/results/wasted-work
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--blocks` | `10` | Blocks per configuration |
-| `--smoke` | off | Run 2 blocks per config |
+The full default grid contains 36,000 races:
 
-**Outputs**
+- M: 10, 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000.
+- Q: 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000, 20,000, 50,000, 100,000.
+- Targets: 300, 600, 900 seconds; 100 repetitions per cell.
 
-| File | Contents |
-|------|----------|
-| `results/exp2_blocktime_sweep.csv` | Block-time sweep: one row per target time |
-| `results/exp2_miner_sweep.csv` | Miner-count sweep: one row per miner count |
-| `results/logs/exp2_*.log` | Full simulation logs |
+Each miner samples without replacement from a fixed query pool. Measured
+`(T,C)` pairs are pooled and resampled jointly, independently of virtual query
+identity. This assumes homogeneous service distributions. No timings, proofs
+or fresh ciphertext hashes are generated by this replay.
 
-Each CSV row contains `completed_proofs`, `included_proofs`, `wasted_proofs`,
-`wasted_ratio`, and mean block time.
+For all completed pairs A through the first winning completion, credit the
+**first** completion of each query, F, whether or not its miner eventually wins:
 
----
+`W = (sum(C over A) - sum(C over F)) / sum(C over A)`.
 
-## GPT-2 LLM collision and cache experiments
+Unfinished work is excluded. Simultaneous events have a reproducible randomized
+tie order; events after the first winner are canceled. This statistical credit
+is distinct from on-chain settlement, which can include a later response first.
+Finite pools can exhaust before any miner wins. All such runs stay in `runs.csv`;
+`cells.csv` and heatmaps report conditional adopted-race means/sample SD plus
+exhaustion counts, rather than treating exhaustion as a successful block.
 
-`experiments/gpt2_experiments.py` implements the concrete protocol in
-`docs/gpt2_plan.md`: fixed GPT-2 BPE prompt windows, the repository's
-Ed25519 sign-then-hash VRF as a deterministic per-step random source,
-inverse-CDF temperature sampling, EOS-aware prefix indicators, and
-prompt-level bootstrap intervals. The default benchmark is the raw
-WikiText-2 test split; LAMBADA is selected with `--dataset lambada`.
-
-Run a smoke check first:
+A reduced wiring check (the `--smoke` flag alone does not shrink the grid):
 
 ```bash
-python experiments/gpt2_experiments.py collision --smoke
+python experiments/wasted_work.py --smoke --miners 2,4 --queries 4,20 \
+  --targets 300 --repeats 3 --output experiments/results/waste-smoke
 ```
 
-The default campaign is 500 prompts × 4 pairs × 32 generated tokens over all
-five temperatures (`0.7,1.0,1.3,1.5,2.0`). On a three-GPU host, run all
-measurements with:
+## Appendix: Stable Diffusion compatibility
 
 ```bash
-python experiments/gpt2_experiments.py run-all \
-  --device cuda --devices cuda:0,cuda:1,cuda:2 \
-  --output-dir experiments/results/gpt2/full
-```
-
-`--device cuda` alone uses every visible GPU; `--devices` is optional and
-pins the worker list explicitly. Each GPU receives its own model copy and
-processes a round-robin share of prompt/temperature units. The runtime target
-is hardware-dependent, so treat the 2–3 hour sizing as an estimate. The
-temperature list applies to collision and concentration; cache timing stays at
-its fixed `--temperature 1.0` diagnostic default.
-
-Supporting commands are `concentration`, `perplexity`, and `cache`; use
-`run-all --smoke` to exercise all four outputs. `--revision` pins a model
-commit, and `--prompt-file` allows an offline newline-delimited prompt source.
-Results include CSV data, PNG plots, `perplexity.json`, and `metadata.json`.
-The cache command measures inference-state reuse only; it is not a claim that
-ZK-prover witnesses or proofs can be reused. It also emits a bounded-LRU
-workload model; adjust it with `--repeat-probability` and
-`--cache-capacities 1,4,16,64`.
-
-Collision and concentration runs print periodic prompt progress and write
-append-only checkpoints under their output directory. Rerun the same command
-after an interruption to resume; use `--progress-every 1` for every prompt or
-`--no-resume` to discard the checkpoint and start over.
-
-## GPT-2 embedding-perturbation experiments
-
-The new plan is implemented by the separate
-`experiments/gpt2_embedding_experiments.py` driver. It leaves the sampler/cache
-driver above unchanged and provides two commands:
-
-```bash
-# Practical run-all defaults (checkpointed and multi-GPU aware)
-python experiments/gpt2_embedding_experiments.py run-all --device cuda
-
-# Individual plan experiments
-python experiments/gpt2_embedding_experiments.py utility --examples-per-task 1000
-python experiments/gpt2_embedding_experiments.py separation --examples-per-task 100 --pairs 50
-
-# Faster separation pilot (caps the large structural stratum)
-python experiments/gpt2_embedding_experiments.py separation \
-  --max-structural-prompts 100 --sigmas 0,0.01,0.02 --pairs 2 --length 16 \
-  --target-tokens 4
-
-# Persistent shell for a long campaign
-scripts/run_gpt2_embedding_tmux.sh --device cuda --devices cuda:0,cuda:1
-```
-
-`utility` reports clean versus one-time prefix-perturbed perplexity/accuracy
-with paired bootstrap intervals over WikiText-2, LAMBADA, HellaSwag, PIQA, and
-ARC-Easy. `separation` compares whole quantized boundaries under independent,
-common-token-stream, and full-protocol challenges, reports changed-coordinate
-fractions and generated-prefix collisions, and writes a challenge-bound trace
-commitment replay check. Pass newline-delimited public prompt files with
-`--repeat-copy-file` and `--resisting-correction-file`; `--smoke` uses labelled
-local structural fallbacks and synthetic utility rows, so benchmark downloads
-are not required for the wiring check. The optional
-reuse table marks `rho_pf` as `not_integrated` until DeepProve proving is wired
-in. See [the implementation note](features/gpt2_embedding_experiments.md) for
-the output schema and scale/runtime guidance.
-
-For the planned maximum-length sensitivity, repeat the collision command with
-`--length 16`, `--length 32`, and `--length 64` (using separate output
-directories). Add `--record-transcripts` when an independently verifiable
-per-step VRF audit is required; omit it for the full campaign unless the large
-JSONL artifact is needed.
-
----
-
-## Experiment 5 — Uniform-Fee Query Collisions
-
-Experiment 5 measures duplicate completed inference-proof work in one-block
-races over a fixed pool of equivalent, uniform-fee queries.
-For the complete protocol, calibration provenance, final results, and an
-implementation-independent reproduction specification, see
-[Experiment 5: Uniform-Fee Query Collisions](experiment_5.md).
-
-The final grid is:
-
-| Parameter | Values |
-|------|---------|
-| Miner count $M$ | 10, 100, 1000 |
-| Target block time $\tau$ | 300, 600, 900 seconds |
-| Query-pool size $Q$ | 1000, 5000, 10000 |
-| Final replicates | 1000 per configuration (27,000 races) |
-
-Running 1000 concurrent real EZKL workers is not feasible on the reference
-host. Instead, the experiment first measures 30 isolated real
-inference-plus-proof durations, then samples those empirical durations with
-replacement in an accelerated discrete-event simulation. One simulated miner
-therefore represents one independently provisioned, homogeneous node with the
-same isolated resource allocation; it does not model 1000 miners contending
-for one 16-core host.
-
-Each miner consumes an independently and uniformly shuffled permutation of
-query IDs $0,\ldots,Q-1$. A query appears at most once in one miner's prefix but
-may be completed by many miners. Query identity cannot affect cost: all work
-uses the fixed timing-calibration input and duration draws are independent of
-query ID. Every query has fee 1 and one output. Account registration, fee
-reservation, and fee debit are outside this accelerated experiment; presence
-in the initialized pool defines eligibility.
-
-### Event and metric semantics
-
-Events are ordered by virtual completion time, then a run-seeded random tie
-key, then insertion sequence. The first winning completion is immediately
-adopted by the coordinator; post-adoption network propagation is irrelevant to
-this one-block boundary. A completion at the same virtual time but ordered
-after adoption is cancelled, has zero remaining time, and is not included in
-the denominator. This preserves coordinator-emitted order without adding a
-latency or consensus tie-breaking model.
-
-For each adopted run:
-
-$$
-	ext{collision ratio}
-=\frac{\sum_q \max(0, c_q-1)}{\sum_q c_q}
-=\frac{\text{completed pairs}-\text{unique completed queries}}
-{\text{completed pairs}},
-$$
-
-where $c_q$ counts full inference-plus-proof completions before adoption. The
-winning pair is included. Every started but unfinished combined attempt is one
-discarded partial; detailed records include elapsed and remaining virtual
-time. An attempt scheduled at exactly the adoption time but ordered after the
-adoption event is retained as `adoption_preceded_tied_event`; it has zero
-remaining time and is reported separately, not counted as a partially
-completed proof. A run where all miners exhaust their permutations without a
-winner is recorded as failed, excluded from the mean ratio, never assigned a
-replacement seed, and causes the final campaign command to exit nonzero.
-
-### 1. Smoke test
-
-The smoke command uses an explicitly synthetic timing fixture and cannot
-produce final results:
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py smoke \
-    --output-dir experiments/results/exp5_smoke
-```
-
-### 2. Run the complete workflow
-
-The three calibration/collection stages can be run with one command:
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py run-all
-```
-
-This prints stage progress such as:
-
-```text
-[run-all] Stage 1/3: timing calibration
-[timing] starting attempt 1 (0/30 successful)
-[timing] attempt 1/30 still running (10s elapsed); press Ctrl+C to stop
-[timing] completed 1/30 successful (86.421s)
-[run-all] Stage 1/3 complete
-[run-all] Stage 2/3: difficulty calibration
-[difficulty] cell 1/9: M=10, target=300s, running 1000 races
-[difficulty] cell 1/9: 100/1000 races complete
-...
-[run-all] Stage 3/3: final collision campaign
-[final] config 1/27: M=10, target=300s, Q=1000; running 1000 races
-[final] config 1/27: 100/1000 races complete
-```
-
-The default reusable artifacts are written to
-`experiments/results/exp5_run_all/`; final output is written to
-`experiments/results/exp5_final_2026_08_12/`. Existing valid timing and
-difficulty artifacts are reused on subsequent `run-all` invocations. The
-final output directory remains write-once and must be moved or renamed before
-starting a new final campaign.
-
-Use the options below to change scale or paths:
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py run-all \
-    --attempts 30 \
-    --verification-runs 1000 \
-    --cpu-limit 16 \
-    --work-dir experiments/results/exp5_run_all \
-    --output-dir experiments/results/exp5_final_2026_08_12
-```
-
-During timing calibration, each native EZKL attempt runs in a child process.
-The parent prints a heartbeat every 10 seconds and remains responsive to
-`Ctrl+C`. Interrupting an attempt terminates the child and writes
-`timing_calibration.json.partial.json`. Re-run `run-all` to resume that
-checkpoint, or run the timing command directly with `--resume`:
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py calibrate-timings \
-    --attempts 30 \
-    --cpu-limit 16 \
-    --output experiments/results/exp5_run_all/timing_calibration.json \
-    --resume
-```
-
-### 3. Measure real EZKL attempt times
-
-Run from a clean committed checkout. The command pins the process to 16 logical
-CPUs, fixes Rayon/BLAS thread limits, uses one fixed valid input, records 30
-successful full inference-plus-proof durations, and retains failures and host
-metadata. It does not discard successful outliers.
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py calibrate-timings \
-    --attempts 30 \
-    --cpu-limit 16 \
-    --output experiments/results/exp5_timing_calibration.json
-```
-
-### 4. Calibrate fixed difficulties
-
-For each $(M,\tau)$ pair, the threshold is calculated from the empirical
-arithmetic mean $E[T]$:
-
-$$
-D=\left\lfloor 2^{256}\frac{E[T]}{M\tau}\right\rfloor.
-$$
-
-The command runs 1000 disjoint-seed verification races per pair and reports
-realized adoption-time statistics and 95% normal confidence intervals. It
-never retunes the threshold and never uses collision outcomes for calibration.
-The same fixed difficulty is reused across all three $Q$ values for a given
-$(M,\tau)$ pair.
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py calibrate-difficulty \
-    --timings experiments/results/exp5_timing_calibration.json \
-    --verification-runs 1000 \
-    --output experiments/results/exp5_difficulty_calibration.json
-```
-
-### 5. Run the frozen final campaign
-
-The committed `experiments/exp5_seed_manifest.json` fixes separate public seed
-roots for smoke, pilot, timing, difficulty calibration, and final runs. Each
-random stream is domain-separated for query ordering, duration draws, lottery
-draws, and equal-time ordering. Final seeds are SHA-256-derived from the frozen
-root and $(M,\tau,Q,\text{replicate})$; all 27,000 derived seeds are unique.
-
-```bash
-python experiments/exp5_uniform_fee_collisions.py run-final \
-    --timings experiments/results/exp5_timing_calibration.json \
-    --calibration experiments/results/exp5_difficulty_calibration.json \
-    --output-dir experiments/results/exp5_final_2026_08_12
-```
-
-Final collection requires timing and difficulty artifacts from the same clean
-simulator commit and identical model/proof artifact digests. It refuses to
-overwrite a non-empty campaign directory. Virtual races are deterministic;
-remaining nondeterminism is confined to the real wall-clock timing calibration
-and is recorded in that artifact.
-
-**Outputs**
-
-| File | Contents |
-|------|----------|
-| `campaign.json` | Commit, complete configuration map, environment, model/proof digests, seed and calibration provenance |
-| `runs.csv` | All 27,000 run IDs, seeds, adoption times, collision metrics, partial-work metrics, and winners |
-| `summary.csv` | One row per configuration; heatmaps use the arithmetic mean of adopted run ratios; pooled ratios, variation, and tied-cancellation counts are also retained |
-| `details/<config_id>/runs.json` | Ordered per-miner completed query lists and full run records for frozen replicates 0–4 |
-| `details/<config_id>/attempts.csv` | Every completed and cancelled attempt for frozen replicates 0–4 |
-| `figures/collision_heatmap_target_{300,600,900}s.{png,pdf}` | Three separate annotated heatmaps using one shared 0-to-global-maximum color scale |
-
-Full attempt-level and per-miner-list records are deliberately retained only
-for the first five of 1000 replicates per configuration. This is the selected
-storage policy; aggregate run records are retained for every replicate.
-
-### Experiment 5b: random Q/M ratio sweep
-
-Experiment 5b reuses the same race semantics and empirical timing calibration,
-but replaces the 27-cell repeated grid with 1,000 unique random $(Q,M)$ pairs.
-The default design places 20 pairs in each of 50 logarithmic $Q/M$ bins, samples
-feasible miner counts log-uniformly, and enforces
-$1\le M<Q\le100{,}000$. The same 1,000 pairs are run once at each target block
-time so the three plots are directly comparable.
-
-```bash
-python experiments/exp5b_ratio_scatter.py
-```
-
-The command reads the existing Exp 5 timing artifact from
-`experiments/results/exp5_run_all/timing_calibration.json`, derives a lottery
-difficulty for each $(M,\tau)$ pair, and writes to
-`experiments/results/exp5b_ratio_scatter/`. Use `--pairs`, `--ratio-bins`,
-`--max-value`, `--targets`, `--seed-root`, `--timings`, or `--output-dir` to
-override the design. Output directories are write-once.
-
-| File | Contents |
-|------|----------|
-| `campaign.json` | Pair design, seed root, timing provenance, environment, and status counts |
-| `runs.csv` | One run-level row per pair and target, including `Q/M`, collision ratio, and percentage of wasted work |
-| `figures/wasted_work_scatter_target_{300,600,900}s.{png,pdf}` | Log-$x$ scatter plots colored by miner count; no-winner runs are reported but omitted from the points |
-
-### Experiment 5c: regular M-by-Q heatmap
-
-Experiment 5c keeps the same accelerated race engine and timing calibration as
-Experiments 5 and 5b, but evaluates a regular log-spaced grid of exact $(M,Q)$
-pairs. It is designed for a readable paper figure while retaining the
-low-$Q/M$ dynamic regime and the near-zero high-$Q/M$ regime seen in Exp 5b.
-
-| Parameter | Values |
-|------|---------|
-| Miner count $M$ | 10, 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000 |
-| Query-pool size $Q$ | 20, 50, 100, 200, 500, 1,000, 2,000, 5,000, 10,000, 20,000, 50,000, 100,000 |
-| Feasible cells | 75, retaining only $Q>M$ |
-| Target block time | 300, 600, 900 seconds |
-| Attempts per cell | 100 |
-| Total races | 22,500 |
-
-The cell value is the mean percentage of wasted work across adopted races. The
-annotation gives the mean and sample standard deviation as `mean% ± sd%`.
-The completed campaign produced 22,413 adopted races and 87 `no_winner`
-races; the latter are reported in `runs.csv` and excluded from the cell
-statistics because they have no adopted block or collision ratio.
-
-The heatmaps use miners $M$ on the horizontal axis, increasing to the right,
-and query-pool size $Q$ on the vertical axis, increasing upward. Thus large
-values occupy the top-right, while infeasible $Q\le M$ cells are gray. Green
-denotes less wasted work and red denotes more wasted work, with black or white
-annotations selected for contrast.
-
-```bash
-python experiments/exp5c_m_q_heatmap.py
-```
-
-The command writes to `experiments/results/exp5c_m_q_heatmap_100rep/` and
-refuses to overwrite an existing campaign. To regenerate only the figures:
-
-```bash
-python experiments/exp5c_m_q_heatmap.py \
-    --plot-runs experiments/results/exp5c_m_q_heatmap_100rep/runs.csv
-```
-
-| File | Contents |
-|------|----------|
-| `campaign.json` | Grid, replicate count, seed root, timing provenance, environment, and status counts |
-| `runs.csv` | One row per attempted target/cell/seed race, including status and wasted-work percentage |
-| `summary.csv` | One row per target/cell with attempted count, adopted count, mean, sample standard deviation, minimum, and maximum |
-| `figures/wasted_work_heatmap_m_q_target_{300,600,900}s.{png,pdf}` | Annotated red-to-green M-by-Q heatmaps |
-
----
-
-## Appendix Experiments — Stable Diffusion CIA Validation (Exp 3 & 4)
-
-These experiments empirically validate the Computational Independence of
-Activations (CIA) property using Stable Diffusion v1.4.
-
-### One-time setup: download SD weights
-
-```bash
+pip install -e '.[diffusion,experiments]'
 python scripts/download_sd_model.py
+python experiments/diffusion_compatibility.py \
+  --model models/stable-diffusion/stable-diffusion-v1-4-fp16 --device cuda:0 \
+  --output experiments/results/diffusion-compatibility
 ```
 
-Weights are saved to `models/stable-diffusion/stable-diffusion-v1-4-fp16/`.
+Defaults are SD v1-4, 512×512 image-equivalent latents (4×64×64 = 16,384),
+50 DDPM steps, 1,000 base inputs, and perturbation σ = .001, .01, .1, .5, 1.0.
+The prompt defaults to `a photo of a cat` and is configurable. The scheduler is
+DDPM fixed-small variance with no clipping, not the checkpoint's PNDM default.
+Classifier-free guidance is 7.5; CUDA uses float16, CPU uses float32. Every
+reverse step has fresh explicit Gaussian noise except the final noiseless step.
 
-### 4. Experiment 3 — Activation divergence
+Perturbed runs share the base run's reverse-step noise, as clarified by the
+paper author. One Gaussian direction per sample is scaled across σ values.
+The independent baseline has independent initial **and reverse-step** noise.
+We record every pre-denoiser latent x_t, not U-Net internal-layer activations:
+per-step cosine mean/SD and minimum L∞ across all samples/steps. No full-model
+ZK proof is attempted, and the VAE need not decode images to measure x_t.
 
-Measures how intermediate UNet activations diverge under small perturbations
-to the latent or the prompt.
+A small real-model check adds `--samples 1 --steps 4 --size 256 --sigmas 0.001`.
+It verifies the executable path, not the appendix's numerical conclusion.
+
+## Appendix: GPT-2 compatibility
 
 ```bash
-python experiments/exp3_sd_activation_divergence.py
+pip install -e '.[llm,experiments]'
+python experiments/gpt2_compatibility.py utility --device cuda:0 \
+  --output experiments/results/gpt2-utility
+python experiments/gpt2_compatibility.py trace --device cuda:0 \
+  --output experiments/results/gpt2-trace
 ```
 
-**Outputs**
+Both use the pinned GPT-2 small checkpoint, float32/evaluation/eager attention,
+and population standard deviation s_E of the full token embedding table.
+Only original prompt embeddings receive independent Gaussian rows with
+σ_abs = α s_E; generated-token embeddings remain clean. α defaults to
+.05, .1, .2, .4. Gaussian values are not clipped or rounded in this experiment.
 
-| File | Contents |
-|------|----------|
-| `results/sd_activation_divergence.json` | Per-layer cosine / L2 / L∞ / relative-error metrics |
-| `results/figures/sd_*.pdf` | Publication-ready figures |
+Utility: 100 examples each from WikiText-2, HellaSwag, PIQA and ARC-Easy, clean
+baseline once and three noisy repetitions. WikiText uses a 32-token context
+and up to 32 teacher-forced target tokens, pooled by target token count for
+perplexity. Multiple-choice prompts keep their last 32 tokens; the answer is
+chosen by minimum summed continuation NLL without length normalization. These
+scoring choices resolve details left unspecified by the paper; changing them
+changes the result. Accuracy in JSON is a fraction (multiply by 100 for percent).
 
-### 5. Experiment 4 — Inference timing
+Trace: the same four tasks plus LAMBADA and Resisting Correction; 100 prompts
+per task, four independent challenge pairs, prefixes 0/1/4/8/16/32. Resisting
+Correction retains its full adversarial instruction within the 1,024-token
+context limit. Both sides **decode independently** at temperature 1, top-k 50,
+top-p .95, stopping comparisons when either side reaches EOS. This replaces
+the historical shared-clean-continuation experiment. Compare whole context
+matrices after embedding, each attention/FFN output and final normalization,
+and the last-position logit vector. Report minimum L∞ and actual comparison
+counts; do not assume every pair executes every prefix.
 
-Runs 1 000 wall-clock inference passes with random prompts and seeds to
-characterise timing variance.
+The precise dataset IDs/splits are in `src/poml_sim/benchmark_data.py`.
+Each command saves `prompts.json`; use `--manifest <prompts.json>` to reuse exact
+tokenized examples even if upstream datasets change. Small real-model runs can
+use `--examples 1 --alphas 0.05 --replicates 1` for utility, or
+`--examples 1 --alphas 0.05 --pairs 1 --steps 0,1,4` for traces.
+
+## Appendix: operation counting and runtime weights
+
+The offline calculator needs no model or GPU:
 
 ```bash
-python experiments/exp4_sd_inference_timing.py
+python experiments/complexity_counts.py --calculate 16:8
+python experiments/complexity_counts.py --plan-only
 ```
 
-**Output**: `results/sd_inference_timing.json` — per-run wall-clock times and
-aggregate statistics.
-
----
-
-## Recommended Run Order
-
-```
-scripts/setup_model.sh
-└── experiments/pow_calibrate.py
-    ├── experiments/exp1_block_time_stability.py
-    └── experiments/exp2_wasted_work.py
-
-scripts/download_sd_model.py
-├── experiments/exp3_sd_activation_divergence.py
-└── experiments/exp4_sd_inference_timing.py
-
-experiments/exp5_uniform_fee_collisions.py
-├── calibrate-timings
-├── calibrate-difficulty
-└── run-final
-
-experiments/exp5b_ratio_scatter.py
-└── reuse Exp 5 timings → 3,000 ratio-sweep races and scatter plots
-
-experiments/exp5c_m_q_heatmap.py
-└── reuse Exp 5 timings → 22,500 regular-grid races and M-by-Q heatmaps
-```
-
-Exp 1 and Exp 2 are independent of the SD experiments and can be run in
-parallel on separate machines.
-
----
-
-## Plotting Results
-
-After Exp 1 and Exp 2 complete, generate figures with:
+The plan covers **40 distinct (N,K), 24 distinct N+K lengths**, plus repeated
+fresh-token controls. To rebuild the reference ledger from real instrumented
+inference/proofs (expensive):
 
 ```bash
-python experiments/plot_exp1_proof_times.py
-python experiments/plot_exp2_wasted_work.py
+python experiments/complexity_counts.py --prepare --cuda --device 0 \
+  --output-dir experiments/results/complexity-counts
 ```
 
-Figures are written to `experiments/results/figures/`.
+The patches instrument the pinned DeepProve/dp-crypto sources. The ledger counts
+logical operations, not CPU instructions or wall time. Setup work and proof
+verification are excluded. Formula terms use S=N+K,
+`U=N²+NK+K(K+1)/2+S²`, `R=NK+K(K−1)/2`,
+`D(S)=123863808+111360S+144S²`, and a vector B_P for each power-of-two padded
+length P. The digest-checked reference matrix is shipped as package data.
+
+Inference and actual-array reduction counts are checked exactly; other proof
+components must be within the declared 5% componentwise validation tolerance.
+This tolerance is an implementation guard, not the manuscript's reported
+maximum observed error of 3.1088%. The schedule
+belongs to the reference autoregressive graph, **not an exact audit of the
+modified noise/sampling circuit**. `--compare-schedule` validates independent
+ledgers against a frozen matrix; `--analyze <ledger.jsonl>` requires its original
+`run.json` in the selected output directory. A reduced fresh check can use
+`--pairs 2:62 --compare-schedule src/poml_sim/data/gpt2_reference_schedule.json`;
+custom campaigns retain context-64 setup capacity.
+
+Fit nonnegative runtime weights from a completed genuine GPT-2 bank:
+
+```bash
+python experiments/fit_complexity.py \
+  experiments/results/measurements/measurements.json \
+  --output experiments/results/complexity-fit
+```
+
+At least eight observations and four distinct prompts are required. This is a
+minimum for executable validation, not a recommended scientific sample size.
+Use varied N and actual K to identify more of the model. Nonnegative ridge
+uses four outer prompt-grouped folds and up to four inner folds to select the
+penalty; duplicates of a prompt never cross folds. Report feature rank,
+held-out errors against a fairly scaled uniform-weight baseline, and integer
+fixed-point rounding error. Correlated operation weights are not identifiable
+as individual hardware costs. The final model is fitted on the entire bank;
+its training error is not the held-out error.
+
+`weights.json` contains integer weights plus the operation-schedule digest.
+Pass it to a subsequent run with `poml-sim --backend gpt2 --weights <file> ...`.
+Without it all operation weights are one. Fitted weights are frozen before
+mining; the lottery still computes one ciphertext hash. The exported rational
+`scale` is a calibration diagnostic retained for analysis, not a ticket count
+or an extra multiplier applied by the simulator.

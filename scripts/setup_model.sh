@@ -1,22 +1,11 @@
 #!/usr/bin/env bash
-# Setup script: exports the tiny U-Net to ONNX and runs EZKL setup.
-# Run from the project root: bash scripts/setup_model.sh
-
+# Export and set up a fresh tiny U-Net circuit using the active Python environment.
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
-cd "$PROJECT_ROOT"
-
-echo "=== Step 1: Export Tiny U-Net to ONNX ==="
-python model/tiny_unet.py
-
-echo ""
-echo "=== Step 2: Run EZKL setup ==="
-python model/setup_ezkl.py model/network.onnx model/
-
-echo ""
-echo "=== Setup complete ==="
-echo "Artifacts in model/:"
-ls -la model/*.onnx model/*.ezkl model/*.json model/*.key model/*.srs 2>/dev/null || true
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+artifacts_dir="${1:-model}"
+if [[ -e "$artifacts_dir/network.onnx" || -e "$artifacts_dir/pk.key" ]]; then
+    echo "Setup already exists; supply a fresh artifacts directory." >&2
+    exit 1
+fi
+python model/tiny_unet.py --output "$artifacts_dir/network.onnx" --seed 42
+python model/setup_ezkl.py "$artifacts_dir/network.onnx" "$artifacts_dir"

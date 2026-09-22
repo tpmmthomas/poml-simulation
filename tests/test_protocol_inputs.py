@@ -1,52 +1,47 @@
-"""Query/miner/proof binding, deterministic noise, and actual response encryption."""
+"""Cryptographic plumbing and deterministic Gaussian/encryption regressions."""
 
+import math
+import pytest
+from cryptography.exceptions import InvalidTag
+from poml_sim.crypto import public_key
 from poml_sim.protocol_inputs import (
-    digest,
     experimental_key,
-    query_binding,
-    public_signing_key,
-    gaussian_noise,
-    decoding_uniforms,
+    gaussian_vector,
+    encryption_public_key,
     encrypt_output,
     decrypt_output,
 )
-from poml_sim.vrf import vrf_verify
+from poml_sim.vrf import vrf_eval, vrf_verify
 
 
-def test_query_binding_changes_with_every_protocol_binding():
-    vk = public_signing_key(experimental_key(1, "sig"))
-    _, r = query_binding(digest(b"parent"), [1, 2], "qid", vk)
-    variants = [
-        (digest(b"other"), [1, 2], "qid", vk),
-        (digest(b"parent"), [1, 3], "qid", vk),
-        (digest(b"parent"), [1, 2], "other", vk),
-        (digest(b"parent"), [1, 2], "qid", b"x" * 32),
-    ]
-    assert all(query_binding(*v)[1] != r for v in variants)
+def test_vrf_is_deterministic_and_binds_key_input_and_output():
+    key = experimental_key(42, "inference")
+    z, proof = vrf_eval(key, b"seed")
+    assert vrf_eval(key, b"seed") == (z, proof)
+    assert vrf_verify(public_key(key), b"seed", z, proof)
+    assert not vrf_verify(public_key(key), b"other", z, proof)
+    assert not vrf_verify(public_key(experimental_key(42, "encryption")), b"seed", z, proof)
+    assert not vrf_verify(public_key(key), b"seed", bytes(32), proof)
+    assert not vrf_verify(public_key(key), b"seed", z, b"bad")
 
 
-def test_gaussian_and_decoding_randomness_reproduce_and_verify():
-    secret = experimental_key(1, "inf")
-    r = digest(b"attempt")
-    noise, vrfs = gaussian_noise(secret, r, 3, 4, 0.05, 0.1437)
-    assert (noise, vrfs) == gaussian_noise(secret, r, 3, 4, 0.05, 0.1437)
-    assert len(noise) == 3 and all(len(row) == 768 for row in noise)
-    assert len(set(decoding_uniforms(vrfs, 3))) == 4
-    assert noise != gaussian_noise(secret, digest(b"other"), 3, 4, 0.05, 0.1437)[0]
-    vk = public_signing_key(secret)
-    for row in vrfs:
-        assert vrf_verify(
-            vk,
-            r + row["t"].to_bytes(8, "big"),
-            bytes.fromhex(row["z"]),
-            bytes.fromhex(row["proof"]),
-        )
+def test_gaussian_expansion_is_finite_deterministic_and_approximately_normal():
+    values = gaussian_vector(b"seed", 20000)
+    assert values == gaussian_vector(b"seed", 20000)
+    assert values != gaussian_vector(b"other", 20000)
+    assert all(math.isfinite(x) for x in values)
+    assert abs(sum(values) / len(values)) < 0.04
+    assert abs(sum(x * x for x in values) / len(values) - 1) < 0.05
 
 
-def test_encryption_binds_proved_payload_and_vrf_randomness():
-    user = experimental_key(3, "user")
-    payload = b"tokens and logits\x00" * 100
-    ct = encrypt_output(payload, user, digest(b"encryption"))
-    assert decrypt_output(ct, user) == payload
-    assert ct == encrypt_output(payload, user, digest(b"encryption"))
-    assert ct != encrypt_output(payload, user, digest(b"different challenge"))
+def test_public_key_encryption_uses_explicit_coins_and_authenticates_tampering():
+    secret = experimental_key(10, "recipient")
+    public = encryption_public_key(secret)
+    encrypted = encrypt_output(b"private output", public, b"a" * 32)
+    assert encrypted == encrypt_output(b"private output", public, b"a" * 32)
+    assert encrypted != encrypt_output(b"private output", public, b"b" * 32)
+    assert decrypt_output(encrypted, secret) == b"private output"
+    with pytest.raises(InvalidTag):
+        decrypt_output(encrypted[:-1] + bytes([encrypted[-1] ^ 1]), secret)
+    with pytest.raises(InvalidTag):
+        decrypt_output(encrypted, experimental_key(11, "recipient"))

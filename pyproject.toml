@@ -1,44 +1,40 @@
 [build-system]
-requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "poml-sim"
-version = "0.1.0"
-description = "PoML blockchain consensus protocol simulation"
-requires-python = ">=3.10"
-dependencies = [
-    "ezkl",
-    "torch>=2.0",
-    "onnx>=1.14",
-    "pydantic>=2.0",
-    "pyyaml>=6.0",
-    "cryptography>=41.0",
-    # Stable Diffusion appendix experiments
-    # (experiments/exp3_sd_activation_divergence.py,
-    #  experiments/exp4_sd_inference_timing.py)
-    "diffusers",
-    "transformers",
-    "accelerate",
-    "safetensors",
-    "numpy",
-    "matplotlib",
-    "tqdm",
-    "Pillow",
-]
+version = "0.2.0"
+description = "Paper-aligned Proof-of-ML-Inference teaching simulator and experiments"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = ["cryptography==46.0.7"]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.0",
-    "pytest-timeout>=2.0",
-]
-llm = [
-    "transformers>=4.40",
-    "datasets>=2.14",
-]
+experiments = ["numpy==2.4.6", "matplotlib==3.10.8", "tqdm==4.70.0"]
+dev = ["pytest==9.0.3", "pytest-timeout==2.4.0", "ruff==0.15.6", "numpy==2.4.6", "matplotlib==3.10.8", "tqdm==4.70.0"]
+llm = ["transformers==5.16.1", "datasets==5.0.1", "torch==2.11.0", "numpy==2.4.6"]
+deepprove = ["transformers==5.16.1", "torch==2.11.0", "tqdm==4.70.0", "datasets==5.0.1"]
+ezkl = ["ezkl==23.0.5", "onnx==1.21.0", "torch==2.11.0", "numpy==2.4.6"]
+diffusion = ["diffusers==0.40.0", "transformers==5.16.1", "accelerate==1.14.0", "safetensors==0.8.0", "torch==2.11.0", "Pillow==12.3.0", "numpy==2.4.6"]
+
+[project.scripts]
+poml-sim = "poml_sim.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+poml_sim = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["model: requires optional Torch/Transformers or Diffusers dependencies"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["E402"]

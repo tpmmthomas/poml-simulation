@@ -108,9 +108,7 @@ def test_pcs_open_does_not_double_count_msm():
 
 
 def test_sumcheck_rounds_do_not_make_mle_fold_charge_quadratic():
-    assert event_counts({"op": "mle_fix", "length": 16, "variables": 4}) == {
-        "mle_fold": 15
-    }
+    assert event_counts({"op": "mle_fix", "length": 16, "variables": 4}) == {"mle_fold": 15}
 
 
 def test_missing_weights_and_negative_weights_are_rejected():
@@ -152,9 +150,7 @@ def test_unverified_and_excluded_events_fail():
     with pytest.raises(ValueError, match="Unverified"):
         ledger_counts({"verified": False, "events": []})
     with pytest.raises(ValueError, match="phase"):
-        ledger_counts(
-            {"verified": True, "events": [{"phase": "setup", "op": "msm", "length": 4}]}
-        )
+        ledger_counts({"verified": True, "events": [{"phase": "setup", "op": "msm", "length": 4}]})
 
 
 def test_unknown_operations_fail_instead_of_being_silently_omitted():
@@ -206,9 +202,7 @@ def test_calculator_rejects_changed_manifest():
 def test_point_encoding_length_is_diagnostic_not_gas():
     assert event_counts({"op": "transcript_append", "bytes": 16}) == {}
     assert event_counts({"op": "transcript_append", "bytes": 158}) == {}
-    assert event_counts({"op": "transcript_points", "count": 1}) == {
-        "transcript_points": 1
-    }
+    assert event_counts({"op": "transcript_points", "count": 1}) == {"transcript_points": 1}
 
 
 def test_compiler_rejects_mixed_setup_and_unknown_schema():

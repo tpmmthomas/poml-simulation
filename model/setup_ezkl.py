@@ -33,9 +33,9 @@ async def setup_ezkl(
     # 1. Generate settings
     #   - input_visibility="hashed/public": inputs are committed via Poseidon hash
     #     (the hash is public, actual inputs are private to the prover).
-    #     This approximates the paper's commitment opening check inside the proof.
-    #   - output_visibility="hashed/public": outputs are also committed, matching
-    #     the paper's encrypted-output design where y_i is not revealed publicly.
+    #     These are model commitments, not the complete PoML query commitment.
+    #   - output_visibility="hashed/public": outputs are committed; encryption
+    #     and its binding to this output remain trusted-host checks.
     #   - param_visibility="fixed": model weights are baked into the circuit,
     #     acting as an implicit commitment to θ (paper's c_θ).
     print("[EZKL] Generating settings...")
@@ -49,7 +49,10 @@ async def setup_ezkl(
     # 2. Generate calibration data
     print("[EZKL] Generating calibration data...")
     cal_data = {
-        "input_data": [np.random.randn(1, 2, 8, 8).reshape(-1).tolist() for _ in range(20)]
+        "input_data": [
+            np.random.default_rng(42 + i).standard_normal((1, 2, 8, 8)).reshape(-1).tolist()
+            for i in range(20)
+        ]
     }
     with open(calibration_path, "w") as f:
         json.dump(cal_data, f)

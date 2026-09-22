@@ -92,9 +92,7 @@ def prediction_metrics(actual, predicted):
         "rmse_seconds": float(np.sqrt(np.mean((actual - predicted) ** 2))),
         "mape_percent": float(100 * np.mean(np.abs(ratio - 1))),
         "r_squared": float(
-            1
-            - np.sum((actual - predicted) ** 2)
-            / np.sum((actual - np.mean(actual)) ** 2)
+            1 - np.sum((actual - predicted) ** 2) / np.sum((actual - np.mean(actual)) ** 2)
         )
         if np.ptp(actual)
         else None,
@@ -110,9 +108,7 @@ def select_penalty(x, y, groups, seed, scale):
         predictions = np.zeros(len(y))
         for fold in sorted(set(folds)):
             train, test = folds != fold, folds == fold
-            predictions[test] = x[test] @ fit_weights(
-                x[train], y[train], penalty, scale
-            )
+            predictions[test] = x[test] @ fit_weights(x[train], y[train], penalty, scale)
         candidates.append({"penalty": penalty, **prediction_metrics(y, predictions)})
     best = min(candidates, key=lambda row: row["rmse_seconds"])
     return best["penalty"], candidates
@@ -128,18 +124,13 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
         raise ValueError("at least eight measurements required")
     vectors, times, groups = [], [], []
     for row in records:
-        if not all(
-            row.get(key) is True
-            for key in ("verified", "fresh_inference", "fresh_proof")
-        ):
+        if not all(row.get(key) is True for key in ("verified", "fresh_inference", "fresh_proof")):
             raise ValueError("fitting requires verified genuine measurements")
         duration = row["inference_proof_seconds"]
         if not np.isfinite(duration) or duration <= 0:
             raise ValueError("recorded inference-plus-proof time must be positive")
         vectors.append(
-            reference_counts(row["prompt_length"], row["output_length"], schedule)[
-                "combined"
-            ]
+            reference_counts(row["prompt_length"], row["output_length"], schedule)["combined"]
         )
         times.append(duration)
         groups.append(row["prompt_sha256"])
@@ -155,10 +146,10 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
         for n in range(2, schedule["setup_max"])
         for k in range(1, schedule["setup_max"] - n + 1)
     ]
-    normalization = np.array(
-        [max(v.get(name, 0) for v in domain) for name in names], dtype=float
-    )
+    normalization = np.array([max(v.get(name, 0) for v in domain) for name in names], dtype=float)
     y = np.array(times)
+    if len(set(groups)) < 4:
+        raise ValueError("at least four distinct prompts required for nested validation")
     folds = group_folds(groups, seed=seed)
     held_out, baseline = np.zeros(len(y)), np.zeros(len(y))
     fold_details = []
@@ -169,20 +160,15 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
         penalty, candidates = select_penalty(
             x[train], y[train], train_groups, seed + int(fold) + 1, normalization
         )
-        held_out[test] = x[test] @ fit_weights(
-            x[train], y[train], penalty, normalization
-        )
+        held_out[test] = x[test] @ fit_weights(x[train], y[train], penalty, normalization)
         # A fitted global multiplier makes the uniform-weight comparison fair.
         slope = float(raw[train] @ y[train] / (raw[train] @ raw[train]))
         baseline[test] = raw[test] * slope
-        fold_details.append(
-            {"fold": int(fold), "penalty": penalty, "inner_candidates": candidates}
-        )
+        fold_details.append({"fold": int(fold), "penalty": penalty, "inner_candidates": candidates})
     penalty, candidates = select_penalty(x, y, groups, seed, normalization)
     coefficients = fit_weights(x, y, penalty, normalization)
     weights = {
-        name: int(round(float(value) * FIXED_POINT))
-        for name, value in zip(names, coefficients)
+        name: int(round(float(value) * FIXED_POINT)) for name, value in zip(names, coefficients)
     }
     costs = [weighted_cost(v, weights) for v in vectors]
     if min(costs) <= 0:
@@ -190,6 +176,7 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
     final_prediction = np.array(costs, dtype=float) / FIXED_POINT
     fit = {
         "schema": "poml-runtime-weights-1",
+        "schedule_sha256": schedule["sha256"],
         "seed": seed,
         "weights": weights,
         "fixed_point_units_per_second": FIXED_POINT,
@@ -205,9 +192,7 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
             )
         ),
         "operation_columns": len(names),
-        "normalized_feature_rank": int(
-            np.linalg.matrix_rank(x / np.maximum(x.mean(axis=0), 1))
-        ),
+        "normalized_feature_rank": int(np.linalg.matrix_rank(x / np.maximum(x.mean(axis=0), 1))),
         "penalty": penalty,
         "candidate_validation": candidates,
         "nested_folds": fold_details,
@@ -218,7 +203,7 @@ def fit_runtime_schedule(records, schedule, *, seed=20260916, ticket_target=1000
         "max_fixed_point_prediction_error_seconds": float(
             np.max(np.abs(final_prediction - x @ coefficients))
         ),
-        "method": "nonnegative ridge; fixed column maxima over public supported N,K domain; no extra intercept; 4 outer prompt folds and 4 inner prompt folds",
+        "method": "nonnegative ridge; fixed column maxima over public supported N,K domain; no extra intercept; 4 outer prompt folds and up to 4 inner prompt folds",
         "scope": "Final weights fit all existing pairs. Replay uses the same bank; held-out prediction errors use nested prompt-grouped validation. Collinear weights are not individually identified physical costs.",
     }
     predictions = [

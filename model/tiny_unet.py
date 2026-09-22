@@ -5,7 +5,7 @@ Architecture mimics a diffusion model's denoiser f_theta:
 - Output: [batch, 1, 8, 8] (predicted noise / denoised output)
 
 2 down-blocks, bottleneck, 2 up-blocks with skip connections.
-Channels: 2 -> 8 -> 16 -> 8 -> 1.  Total ~2-5K params.
+Channels: 2 -> 8 -> 16 -> 8 -> 1. Total 11,401 randomly initialized parameters.
 """
 
 import torch
@@ -51,8 +51,8 @@ class TinyUNet(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.down1 = DownBlock(2, 8)    # 8x8 -> 4x4
-        self.down2 = DownBlock(8, 16)   # 4x4 -> 2x2
+        self.down1 = DownBlock(2, 8)  # 8x8 -> 4x4
+        self.down2 = DownBlock(8, 16)  # 4x4 -> 2x2
 
         self.bottleneck = nn.Sequential(
             nn.Conv2d(16, 16, 3, padding=1),
@@ -60,7 +60,7 @@ class TinyUNet(nn.Module):
         )
 
         self.up2 = UpBlock(16, 16, 8)  # 2x2 -> 4x4
-        self.up1 = UpBlock(8, 8, 8)    # 4x4 -> 8x8
+        self.up1 = UpBlock(8, 8, 8)  # 4x4 -> 8x8
 
         self.out_conv = nn.Conv2d(8, 1, 1)
 
@@ -76,7 +76,7 @@ class TinyUNet(nn.Module):
         return self.out_conv(u1)
 
 
-def export_onnx(output_path: str = "model/network.onnx") -> None:
+def export_onnx(output_path: str = "model/network.onnx", seed: int = 42) -> None:
     """Export the TinyUNet to ONNX format."""
     import os
 
@@ -84,6 +84,7 @@ def export_onnx(output_path: str = "model/network.onnx") -> None:
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
+    torch.manual_seed(seed)
     model = TinyUNet()
     model.eval()
 
@@ -109,4 +110,10 @@ def export_onnx(output_path: str = "model/network.onnx") -> None:
 
 
 if __name__ == "__main__":
-    export_onnx()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", default="model/network.onnx")
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
+    export_onnx(args.output, args.seed)

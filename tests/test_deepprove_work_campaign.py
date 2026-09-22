@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from experiments.run_deepprove_work import load_ledger, validation_pairs
+from experiments.complexity_counts import load_ledger, validation_pairs
 
 
 def test_campaign_covers_every_proof_profile_and_padding_neighbor():
@@ -15,7 +15,9 @@ def test_campaign_covers_every_proof_profile_and_padding_neighbor():
     totals = {n + k for n, k in pairs}
     assert {3, 4, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64} <= totals
     assert (63, 1) in pairs and (2, 62) in pairs
-    assert len(pairs) > len(set(pairs))
+    assert len(pairs) == 48
+    assert len(set(pairs)) == 40
+    assert len(totals) == 24
 
 
 def test_incomplete_ledger_is_rejected(tmp_path):

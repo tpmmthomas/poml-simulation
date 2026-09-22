@@ -10,7 +10,7 @@ from poml_sim.runtime_weights import (
     nonnegative_ridge,
     fit_runtime_schedule,
 )
-from poml_sim.llm_simulation import load_schedule
+from poml_sim.backends import load_schedule
 from pathlib import Path
 
 
@@ -55,7 +55,7 @@ def test_nonnegative_ridge_rejects_invalid_penalty(penalty):
 
 
 def test_fit_uses_realised_lengths_and_learns_fixed_overhead():
-    schedule = load_schedule(Path("config/gpt2_reference_schedule.json"))
+    schedule = load_schedule(Path("src/poml_sim/data/gpt2_reference_schedule.json"))
     records = [
         dict(
             query_id=f"p{i}-cap{k}",
@@ -75,10 +75,7 @@ def test_fit_uses_realised_lengths_and_learns_fixed_overhead():
     ]
     fit, predictions = fit_runtime_schedule(records, schedule)
     assert fit["held_out_weighted"]["mape_percent"] < 1
-    assert (
-        fit["held_out_weighted"]["mape_percent"]
-        < fit["held_out_uniform"]["mape_percent"]
-    )
+    assert fit["held_out_weighted"]["mape_percent"] < fit["held_out_uniform"]["mape_percent"]
     assert min(fit["weights"].values()) >= 0
     assert fit["scale"]["scaled_median"] == 10000
     assert fit["max_fixed_point_prediction_error_seconds"] < 0.001

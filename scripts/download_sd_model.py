@@ -6,8 +6,7 @@ Usage:
 Downloads CompVis/stable-diffusion-v1-4 and re-saves it as the fp16 variant
 under ``models/stable-diffusion/stable-diffusion-v1-4-fp16`` — the path
 consumed by the SD appendix experiments
-(``experiments/exp3_sd_activation_divergence.py`` and
-``experiments/exp4_sd_inference_timing.py``).
+(``experiments/diffusion_compatibility.py``).
 """
 
 from pathlib import Path
@@ -18,6 +17,7 @@ MODELS_DIR = ROOT / "models"
 
 def download_stable_diffusion(dest: Path) -> None:
     """Download Stable Diffusion v1.4 (fp16 variant — smallest practical SD checkpoint)."""
+    import torch
     from diffusers import StableDiffusionPipeline  # type: ignore
 
     print("Downloading Stable Diffusion v1.4 …")
@@ -25,6 +25,7 @@ def download_stable_diffusion(dest: Path) -> None:
     pipe = StableDiffusionPipeline.from_pretrained(
         "CompVis/stable-diffusion-v1-4",
         cache_dir=str(dest),
+        torch_dtype=torch.float16,
     )
     pipe.save_pretrained(dest / "stable-diffusion-v1-4-fp16")
     print(f"Stable Diffusion v1.4 saved to {dest / 'stable-diffusion-v1-4-fp16'}")

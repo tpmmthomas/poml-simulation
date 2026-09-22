@@ -1,0 +1,10 @@
+include README.md STATUS.md LICENSE
+recursive-include docs *.md
+include experiments/*.py experiments/README.md
+recursive-include scripts *.py *.sh *.patch
+recursive-include model *.py
+recursive-include tests *.py
+prune experiments/results
+prune .scratch
+prune .claude
+prune models

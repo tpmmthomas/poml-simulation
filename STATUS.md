@@ -1,44 +1,38 @@
 # Project Status
-Updated: 2026-09-17
-**Health:** green — 36,000 uniform-fee races audited; focused checks pass and the updated paper compiles.
-**Now:** Query-pool section follows the original uniform-fee design with LLM complexity and a complete grid.
+Updated: 2026-09-22
+**Health:** green — publication protocol tests and both real model-proof backends pass.
+**Now:** `fc27` packages an independent paper-aligned simulator and the requested experiments.
 
 ## Components
 
 | Area | State | Notes |
 | --- | --- | --- |
-| Paper evaluation | updated | Original query-pool wording/analysis restored; three full-grid mean ± SD heatmaps |
-| Live GPT-2 miner | qualified | Genuine bank stage; replayed inference/proof service times for virtual miners; WikiText prompts, Gaussian noise, EOS/cap |
-| DeepProve decoder | qualified | Composite inverse-CDF verification over public logits; context 64 and EOS checked |
-| Complexity/lottery | calibrated | Nonnegative runtime regression on 88 existing pairs; actual N,K, frozen integer weights, literal SHA-256 |
-| Experiments 1–2 | campaign complete | Varied-K replay and separate 600-block fitted-weight comparison complete; no new proof measurements |
-| Query-pool scaling | campaign complete | 36,000 homogeneous LLM races; first-completion credit; 35,829 adopted, 171 exhausted |
-| Historical experiments | retained | Original diffusion/EZKL and previous trace-bank simulations |
+| Protocol | implemented | Single-hash threshold, query/seed bindings, deferred responses, fees and forks |
+| GPT-2 / DeepProve | verified | Fresh proofs and eight-pair measurement bank; optional fitted weights |
+| Tiny U-Net / EZKL | verified | Setup from scratch and fresh verified single-pass proofs |
+| Main experiments | runnable | Liveness fresh/replay modes, actual/Poisson PoW, fixed-pool completed waste |
+| Appendix | runnable | DDPM, GPT-2 utility/traces, operation counter and nonnegative runtime fit |
+| Packaging | verified | MIT original code, optional pinned dependencies, package-data schedule |
 
 ## Recent changes
 
 | Date | Change | Ref |
 | --- | --- | --- |
-| 2026-09-17 | Restored uniform-fee query-pool design; reran all M/Q cells with raw complexity and original heatmap style | [uniform-fee guide](docs/features/llm_uniform_fee_scaling.md) |
-| 2026-09-16 | Updated active evaluation and surrounding experimental claims; rebuilt figures from archived results only | [paper results](docs/features/llm_paper_results.md) |
-| 2026-09-16 | Completed runtime-weighted selection replay; held-out MAPE 10.12% → 3.95%, long-policy ticket-rate excess 8.02% → 1.49% | [weighting guide](docs/features/runtime_weighted_selection.md) |
-| 2026-09-15 | Added profiled replay after genuine perturbed inference/proof bank construction; public-logit proofs and scaled hashes | [live guide](docs/features/llm_live_protocol.md) |
-| 2026-09-15 | Moved bulk artifacts and environment to NAS with verified workspace links | [storage map](docs/features/nas_artifact_storage.md) |
-| 2026-09-15 | Audited historical protocol coverage and corrected full-prefix response accounting | [historical audit](docs/features/llm_protocol_simulation_audit.md) |
-| Earlier | Benchmark profiling, relative-noise utility, variable-shape/CUDA, complexity and embedding studies | [docs](docs/README.md) |
+| 2026-09-22 | Replace historical workspace with publication implementation and retain only paper experiments | [audit](docs/features/publication.md) |
+| 2026-09-22 | Validate real backends, fresh counts, dataset loaders and reduced experiment commands | [verification](docs/verification.md) |
+| Earlier | Historical measurements and paper drafts retained locally as ignored artifacts | [scope](docs/experiments.md) |
 
 ## Todo / next
 
 | Priority | Item | Notes |
 | --- | --- | --- |
-| medium | Assess selection uncertainty before stronger claims | Three seeds/policy; short-policy pooled block yield still 1.179× uniform |
+| optional | Run full publication campaigns on a dedicated host | [commands](docs/experiments.md); reduced runs are not paper results |
 
 ## Known issues
 
 | Issue | Impact | Workaround |
 | --- | --- | --- |
-| Existing manuscript references | Four unresolved references and one duplicated label outside query-pool section | Repair liveness/appendix references separately; current subsection resolves |
-| Replay proofs are source-bound | Each virtual attempt points to a genuine archived proof but does not re-prove its new challenge | Report the bank/replay distinction; lottery and current auxiliary hashes remain fresh |
-| Modified graph uses the approved reference C | Counts are not newly audited exact costs of noise/sampling graph | Log raw/scaled C and examine measured C/time |
-| Host executes independent virtual miners serially | Canceled jobs still cost physical time/storage | Separate physical and logical accounting |
-| Operation weights are underidentified | 47 features have rank six across 17 measured N,K shapes | Treat as an empirical schedule; report held-out prediction error |
+| Full private PoML NP relation is abstracted | Trusted-host receipts; no independent distributed verification/privacy claim | Explicit audit and real model proofs |
+| Serial host execution and zero network delay | Virtual timing differs from real distributed elapsed time | Report canceled physical jobs separately |
+| Modified GPT-2 graph uses reference C | Extra perturbation/sampling operations are not newly counted exactly | Frozen reference schedule; document approximation |
+| Runtime weights can be underidentified | Coefficients need not represent unique physical costs | Report rank and grouped held-out errors |

@@ -10,6 +10,7 @@ elements used as public commitments.
 """
 
 import json
+import math
 import os
 import tempfile
 
@@ -20,7 +21,7 @@ def verify_proof(proof_bytes: bytes, artifacts_dir: str = "model/") -> bool:
     """Verify a ZK proof. Returns True iff valid."""
     vk_path = os.path.join(artifacts_dir, "vk.key")
     settings_path = os.path.join(artifacts_dir, "settings.json")
-    # Pass srs_path explicitly so we use the SRS shipped with the repo
+    # Pass srs_path explicitly so we use the SRS in the setup directory
     # instead of relying on ~/.ezkl/srs/ (which the tutorial populates via
     # ezkl.get_srs()).
     srs_path = os.path.join(artifacts_dir, "kzg.srs")
@@ -47,12 +48,11 @@ def run_inference_and_prove(
 
     # Pack noise (channel 0) and conditioning (channel 1) into the flat
     # [1, 2, 8, 8] tensor expected by the circuit.
-    spatial = input_shape[2] * input_shape[3]
-    assert len(noise) >= spatial, f"noise length {len(noise)} < spatial {spatial}"
-    assert (
-        len(conditioning) >= spatial
-    ), f"conditioning length {len(conditioning)} < spatial {spatial}"
-    input_flat = list(noise[:spatial]) + list(conditioning[:spatial])
+    if input_shape != [1, 2, 8, 8] or len(noise) != 64 or len(conditioning) != 64:
+        raise ValueError("tiny U-Net requires exactly two finite 8x8 channels")
+    input_flat = list(noise) + list(conditioning)
+    if not all(math.isfinite(value) for value in input_flat):
+        raise ValueError("tiny U-Net inputs must be finite")
 
     compiled_path = os.path.join(artifacts_dir, "network.ezkl")
     pk_path = os.path.join(artifacts_dir, "pk.key")
@@ -73,13 +73,15 @@ def run_inference_and_prove(
         # Under hashed output visibility, top-level "outputs" are Poseidon
         # field elements; real float outputs live in pretty_elements.
         rescaled = (witness_data.get("pretty_elements") or {}).get("rescaled_outputs")
-        if rescaled:
-            output_values = [float(x) for x in rescaled[0]]
-        else:
-            output_values = [float(x) for x in witness_data["outputs"][0]]
+        if not rescaled or len(rescaled[0]) != 64:
+            raise RuntimeError("EZKL witness is missing its rescaled denoiser output")
+        output_values = [float(x) for x in rescaled[0]]
+        if not all(math.isfinite(value) for value in output_values):
+            raise RuntimeError("EZKL returned nonfinite denoiser output")
 
         res = ezkl.prove(witness_path, compiled_path, pk_path, proof_path, srs_path)
-        assert res, "ezkl.prove failed"
+        if not res:
+            raise RuntimeError("ezkl.prove failed")
 
         with open(proof_path, "rb") as f:
             proof_bytes = f.read()

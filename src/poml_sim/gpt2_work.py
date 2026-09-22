@@ -85,10 +85,7 @@ def proof_axis_macs(s: int) -> int:
     if type(s) is not int or s < 3:
         raise ValueError("Total sequence length must be at least three")
     return (
-        LINEAR_MACS
-        + 3 * LAYERS * WIDTH * 12
-        + (12 * LAYERS + 1) * WIDTH * s
-        + 12 * LAYERS * s * s
+        LINEAR_MACS + 3 * LAYERS * WIDTH * 12 + (12 * LAYERS + 1) * WIDTH * s + 12 * LAYERS * s * s
     )
 
 
@@ -133,9 +130,7 @@ def event_counts(event: dict) -> Counter:
             h < 0 or h > u or u > v for u, h in zip(domains, supports)
         ):
             raise ValueError("Invalid sumcheck polynomial domain")
-        out["sumcheck_fold"] = sum(
-            (1 << h) - 1 + u - h for u, h in zip(domains, supports)
-        )
+        out["sumcheck_fold"] = sum((1 << h) - 1 + u - h for u, h in zip(domains, supports))
         for u, h, degree in event["monomials"]:
             if h < 0 or h > u or u > v or degree < 1:
                 raise ValueError("Invalid sumcheck monomial")
@@ -153,9 +148,7 @@ def event_counts(event: dict) -> Counter:
     elif op == "pcs_open":
         length, v = event["length"], event["variables"]
         if length != 1 << v or v < 1:
-            raise ValueError(
-                "HyperKZG opening requires a nonconstant power-of-two polynomial"
-            )
+            raise ValueError("HyperKZG opening requires a nonconstant power-of-two polynomial")
         # The actual MSMs and RLC are metered separately. These cover the
         # intermediate folds, three univariate evaluations, and three synthetic
         # divisions in HyperKZG. Coefficients include padded zero entries.
@@ -220,9 +213,7 @@ def schedule_digest(schedule: dict) -> str:
     import json
 
     payload = {k: v for k, v in schedule.items() if k != "sha256"}
-    return sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def component_error(actual: Mapping[str, int], expected: Mapping[str, int]) -> float:
