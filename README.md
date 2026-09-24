@@ -90,6 +90,7 @@ inference–proof measurements and then introduces the following experiments:
 
 - **PoML Liveness and Block Generation Stability**
 - **Wasted Work Analysis**
+- **Useful-work efficiency**
 - **DDPM Compatibility: Formal Statements and Experiments**
 - **LLM Compatibility: Formal Statements and Experiments**
 - **A Reference Complexity Function for GPT-2 and DeepProve**
@@ -111,11 +112,10 @@ uvx --from ruff==0.15.6 ruff format --check src tests experiments scripts model
 | **Query submission.** A signed query contains `qid`, `taskID`, an input commitment, an expiry height, and a maximum fee. | `PoMLSystem.submit_query` creates and validates the same fields; raw inputs remain off-chain and are checked against the commitment. |
 | **Miner registration.** Each miner registers an identity key, an inference VRF key, and an encryption VRF key. | `MinerKeys` holds three domain-separated Ed25519 keys and `Registration` activates their signed public-key triple in the ledger. |
 | **Inference randomness.** An unbiasable VRF derives the ordered randomness collection `R` for each query. | A deterministic sign-then-hash Ed25519 VRF substitute derives and verifies each indexed value; it is not the paper's formally unbiasable VRF. |
-| **PoML proof relation.** A NIZK proves model inference, the input commitment, complexity, encryption randomness, and ciphertext construction. | The model backend produces a genuine EZKL or DeepProve model proof. Verification of the proof however is not simulated. |
+| **PoML proof relation.** A NIZK proves model inference, the input commitment, complexity, encryption randomness, and ciphertext construction. | The model backend produces and verifies a genuine EZKL or DeepProve model proof; the complete private relation is represented by a trusted-host receipt in the simulator. |
 | **Block production.** Transactions are frozen first; the first seed uses `G(s, tx)`, later seeds use `H(π)`; a miner appends inference–proof pairs until it wins. | The simulator follows this order, checks the three key roles, verifies both VRF transcripts, and binds every pair to the preceding proof. |
 | **Lottery.** A complexity-`C` pair wins with `tau_D(C) = 1 - (1 - D/2^256)^C`. | One SHA-256 hash of `G(s, tx)` and the complete ciphertext prefix is compared with the exact integer threshold `D_C`. |
 | **Ledger and fees.** Valid blocks settle query fees as burn, solve, and include components; completed losing responses may be submitted later. | Account balances, expiries, duplicate-settlement checks, response transactions, longest-chain adoption, and first-received ties are implemented. |
 | **Model instantiations.** The paper describes stochastic denoising models and perturbed autoregressive language models. | `diffusion` proves one tiny fixed-shape U-Net pass with `C=1`; `gpt2` runs fresh GPT-2 small inference and DeepProve proofs under the 64-token setup. |
 | **Output privacy.** NIZK zero knowledge and randomized public-key encryption hide the model output from other parties. | X25519/HKDF/AES-GCM is implemented for output encryption |
 | **Distributed execution.** The security argument assumes a synchronous network and independent miners. | Virtual miners are independent, but physical prover calls are serialized on one host with zero network delay. |
-

@@ -1,6 +1,6 @@
 # Project Status
 
-Updated: 2026-09-22
+Updated: 2026-09-25
 **Health:** green — protocol tests and both real model-proof backends pass.
 **Now:** paper-aligned simulator and experiment documentation are in place.
 
@@ -11,13 +11,14 @@ Updated: 2026-09-22
 | Protocol | implemented | Query admission, three-key miner registration, proof chains, complexity-weighted lottery, fees, forks, and deferred responses |
 | GPT-2 / DeepProve | verified | Fresh proofs, measured inference–proof pairs, operation counts, and optional fitted weights |
 | Tiny U-Net / EZKL | verified | Fresh setup and verified single-pass proofs |
-| Experiments | runnable | PoML Liveness and Block Generation Stability, Wasted Work Analysis, DDPM Compatibility, LLM Compatibility, and the GPT-2/DeepProve complexity function |
+| Experiments | runnable | PoML Liveness and Block Generation Stability, useful-work efficiency, Wasted Work Analysis, DDPM Compatibility, LLM Compatibility, and the GPT-2/DeepProve complexity function |
 | Packaging | verified | MIT original code, optional pinned dependencies, package-data schedule |
 
 ## Recent changes
 
 | Date | Change | Ref |
 | --- | --- | --- |
+| 2026-09-25 | Add fresh useful-work efficiency campaign with component timings and bootstrap accounting | [experiment guide](docs/experiments.md) |
 | 2026-09-22 | Rewrite Markdown around the paper's terminology and the main-branch comparison-table style | [documentation note](docs/changes/2026-09-22-paper-aligned-docs.md) |
 | 2026-09-22 | Replace historical workspace with the current paper implementation and experiments | [verification](docs/verification.md) |
 | 2026-09-22 | Validate real backends, fresh counts, dataset loaders, and reduced experiment commands | [verification](docs/verification.md) |

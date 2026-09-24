@@ -56,6 +56,86 @@ generated length is recorded; it is not replaced by the requested output cap.
 when the bank is complete. Synthetic smoke durations must not be called
 measurements.
 
+## Useful-work efficiency
+
+`work_efficiency.py` measures the online cost of producing a fresh response and
+computes the useful-work fraction proposed for the paper. It uses one
+serialized context-64 GPT-2/DeepProve worker. The default paper campaign has
+5 warm-up responses and 50 measured responses, with prompt lengths cycling
+through 8, 16, 24, and 32 tokens. The command fixes the output cap at one token
+to keep the full proof campaign practical:
+
+```bash
+python experiments/work_efficiency.py --backend gpt2 --device cuda:0 \
+  --setup-directory experiments/results/llm_poml/protocol-context64-smoke/prover \
+  --output experiments/results/work-efficiency \
+  --queries 50 --warmup 5 --max-output 1 --bootstrap 10000 --seed 20260925
+```
+
+For each measured response, the script records the prover's inference,
+proof-generation, and proof-verification times. These three components are
+classified as useful work because the response and its correctness certificate
+are the service delivered to the query author. It times the remaining online
+work separately: inference and encryption VRFs, hashes, complexity evaluation,
+encryption, signatures, serialization, artifact I/O, protocol validation, and
+the lottery check. Model/setup initialization, query submission, network
+communication, and duplicate-query races are outside this experiment.
+
+The summary uses ratios of totals rather than averages of per-response ratios:
+
+```text
+alpha_cert = total_elapsed / total_useful
+useful_fraction = total_useful / total_elapsed = 1 / alpha_cert
+auxiliary_fraction = 1 - useful_fraction
+```
+
+The bootstrap resamples prompt clusters within each prompt-length stratum, so
+repeated prompts in parallel shards are not treated as independent inputs.
+`manifest.json` records hardware, source hashes, prover setup identity, and
+the experimental substitutions: the model backend supplies a genuine model
+proof, while the complete private PoML relation is a trusted-host receipt and
+the VRF is the repository's sign-then-hash substitute. These substitutions are
+part of the
+reported implementation boundary and should not be read as a benchmark of a
+production NIZK or formally unbiasable VRF.
+
+To reanalyze a completed run without creating new proofs:
+
+```bash
+python experiments/work_efficiency.py --summarize \
+  experiments/results/work-efficiency --bootstrap 10000 --seed 20260925
+```
+
+Independent GPU workers may be used when their device allocation is separated.
+For a 50-response campaign, launch three workers with 17, 17, and 16 measured
+responses (and two warm-ups each), then merge their completed output:
+
+```bash
+python experiments/work_efficiency.py --device cuda:0 --queries 17 --warmup 2 \
+  --max-output 1 --seed 20260925 \
+  --setup-directory experiments/results/llm_poml/protocol-context64-smoke/prover \
+  --output experiments/results/work-efficiency-shard0
+python experiments/work_efficiency.py --device cuda:1 --queries 17 --warmup 2 \
+  --max-output 1 --seed 20260925 \
+  --setup-directory experiments/results/llm_poml/protocol-context64-smoke/prover \
+  --output experiments/results/work-efficiency-shard1
+python experiments/work_efficiency.py --device cuda:2 --queries 16 --warmup 2 \
+  --max-output 1 --seed 20260925 \
+  --setup-directory experiments/results/llm_poml/protocol-context64-smoke/prover \
+  --output experiments/results/work-efficiency-shard2
+python experiments/merge_work_efficiency.py \
+  experiments/results/work-efficiency-shard0 \
+  experiments/results/work-efficiency-shard1 \
+  experiments/results/work-efficiency-shard2 \
+  --output experiments/results/work-efficiency
+```
+
+The merge recomputes the ratio of aggregate useful and elapsed time; it does
+not average shard-level ratios. The measured campaign separates GPU devices;
+its manifest records that the workers inherited the shared host CPU affinity.
+For strict CPU isolation, wrap each worker with a disjoint `taskset -c` range
+before launching it.
+
 ## PoML Liveness and Block Generation Stability
 
 This experiment uses four miners, a pool of 256 queries, 50 blocks, and a
