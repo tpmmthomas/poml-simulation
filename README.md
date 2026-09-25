@@ -93,6 +93,7 @@ inference–proof measurements and then introduces the following experiments:
 - **Useful-work efficiency**
 - **DDPM Compatibility: Formal Statements and Experiments**
 - **LLM Compatibility: Formal Statements and Experiments**
+- **GPT-2 generated-prefix collisions and first divergence**
 - **A Reference Complexity Function for GPT-2 and DeepProve**
 - **Additional Wasted-Work Results**, produced as part of Wasted Work Analysis
 

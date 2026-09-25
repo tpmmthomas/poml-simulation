@@ -13,6 +13,7 @@ order in which a reader encounters the concepts and the meaning of each metric.
 | Wasted Work Analysis | `wasted_work.py` | Measure duplicate completed complexity under a fixed query pool |
 | DDPM Compatibility: Formal Statements and Experiments | `diffusion_compatibility.py` | Compare Stable Diffusion latent trajectories under perturbation |
 | LLM Compatibility: Formal Statements and Experiments | `gpt2_compatibility.py` | Measure GPT-2 utility and layer-wise activation separation |
+| GPT-2 generated-prefix collisions | `gpt2_collision.py` | Measure shared output prefixes and first divergence under independent sampling |
 | A Reference Complexity Function for GPT-2 and DeepProve | `complexity_counts.py` | Count instrumented operations and validate the public schedule |
 | A Reference Complexity Function for GPT-2 and DeepProve | `fit_complexity.py` | Fit nonnegative runtime weights with grouped validation |
 

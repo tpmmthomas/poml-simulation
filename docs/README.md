@@ -12,6 +12,8 @@ Read the documentation in this order:
    terminology and structure used in this documentation revision.
 5. [Useful-work efficiency change note](changes/2026-09-25-useful-work-efficiency.md)
    — component accounting, campaign results, and implementation boundaries.
+6. [GPT-2 prefix-collision change note](changes/2026-09-25-gpt2-prefix-collision.md)
+   — generated-prefix agreement, EOS censoring, and first-divergence outputs.
 
 The paper draft in `.scratch/PoML_paper_draft` is the source for names and
 definitions. Generated measurements, model weights, proofs, and figures are

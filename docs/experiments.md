@@ -300,6 +300,53 @@ Use `--manifest prompts.json` to reuse exactly tokenized examples across runs.
 Small checks can use `--examples 1 --alphas 0.05 --replicates 1` for utility or
 `--examples 1 --alphas 0.05 --pairs 1 --steps 0,1,4` for traces.
 
+### Generated-prefix collisions and first divergence
+
+This companion experiment measures observable token-level agreement between
+independently sampled GPT-2 traces. It uses 500 deduplicated 32-token
+WikiText-2 test prompts, four independent trace pairs per prompt, temperatures
+`0.7, 1.0, 1.3, 1.5, 2.0`, and a 32-token generation cap. Each trace uses an
+independent per-step output from the repository's sign-then-hash VRF substitute,
+full categorical sampling after temperature scaling, and no top-k, top-p, or
+repetition-penalty filtering. Traces stop at EOS.
+
+Run the paper-scale campaign with:
+
+```bash
+python experiments/gpt2_collision.py --device cuda:0 \
+  --output experiments/results/gpt2/full/collision
+```
+
+The run records the selected prompts, model and sampling metadata, a resumable
+per-prompt checkpoint, and these result files:
+
+| File | Contents |
+| --- | --- |
+| `collision_curves.csv` | Pooled `C_l` estimates and prompt-level uncertainty summaries |
+| `collision_aggregates.csv` | Expected shared-prefix length `sum_l C_l` by temperature |
+| `first_divergence.csv` | Counts by the first differing generated position |
+| `collision_curves.png/.pdf` | The two-panel prefix-collision graph |
+
+For two traces `Y_a` and `Y_b`, `C_l` is estimated as
+`Pr[Y_a[1:l] = Y_b[1:l]]` among pairs for which both traces reach position `l`.
+The expected shared prefix is `sum_l C_l`. A pair that reaches EOS before `l`
+is excluded from that position's denominator, so the estimates are explicitly
+EOS-censored. The first-divergence file records token mismatches and an EOS
+boundary as a one-based position; identical traces have no divergence row.
+
+The generated graph focuses on the first eight positions because collisions
+are already rare in the tail; the CSV retains all positions through the
+32-token cap. The experiment is an output-agreement measurement and does not
+establish the hidden-state non-reuse assumption tested by the activation trace
+experiment above.
+
+To check the command wiring on a small CPU run, use a fresh output directory:
+
+```bash
+python experiments/gpt2_collision.py --smoke --device cpu \
+  --output experiments/results/gpt2/collision-smoke
+```
+
 ## A Reference Complexity Function for GPT-2 and DeepProve
 
 The complexity function makes the cost of an inference–proof pair public. It
